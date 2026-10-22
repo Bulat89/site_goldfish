@@ -502,7 +502,7 @@ export function renderPrices(s: PricesState): string {
 <main class="wrap agents prices">
   <section class="hero hero--user">
     <div class="hero__text">
-      <p class="eyebrow"><a href="/">Кабинет</a> · <a href="/agents?tab=property">агенты объекта</a> · цены</p>
+      <p class="eyebrow"><a href="/start">Настройка</a> · <a href="/agents?tab=property">агенты объекта</a> · цены</p>
       <h1>Цены${s.hotelName ? ` — ${esc(s.hotelName)}` : ''}</h1>
       <p class="lead">Агент «Цены и загрузка» сам отбирает прямых конкурентов — сравнивает тип, описание, номера, удобства, место и цену — и считает по ним среднюю и медиану. Каждая цифра здесь — с цитатой со страницы и ссылкой на неё.</p>
     </div>

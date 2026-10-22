@@ -66,6 +66,23 @@ describe.each(stores)('%s store', (_name, make) => {
     expect((await store.getUser(u.id))!.lastDownloadAt).not.toBeNull();
   });
 
+  it('marks the setup wizard finished once', async () => {
+    const store = await get();
+    const u = await store.upsertYandexUser({
+      yandexId: yandexId(),
+      login: null,
+      email: null,
+      name: null,
+      avatarId: null,
+    });
+    expect(u.onboardedAt).toBeNull();
+    const done = await store.markOnboarded(u.id);
+    expect(done.onboardedAt).not.toBeNull();
+    // Finished again (the wizard opened later): the first time stays.
+    expect((await store.markOnboarded(u.id)).onboardedAt).toBe(done.onboardedAt);
+    expect((await store.getUser(u.id))!.onboardedAt).toBe(done.onboardedAt);
+  });
+
   it('finds live sessions, forgets expired and deleted ones', async () => {
     const store = await get();
     const u = await store.upsertYandexUser({

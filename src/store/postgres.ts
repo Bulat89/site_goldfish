@@ -19,6 +19,7 @@ const COLUMNS = [
   'token_id',
   'token_issued_at',
   'last_download_at',
+  'onboarded_at',
 ];
 const USER_COLUMNS = COLUMNS.join(', ');
 
@@ -34,6 +35,7 @@ interface UserRow {
   token_id: string | null;
   token_issued_at: Date | null;
   last_download_at: Date | null;
+  onboarded_at: Date | null;
 }
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -51,6 +53,7 @@ function toUser(r: UserRow): UserRecord {
     tokenId: r.token_id,
     tokenIssuedAt: iso(r.token_issued_at),
     lastDownloadAt: iso(r.last_download_at),
+    onboardedAt: iso(r.onboarded_at),
   };
 }
 
@@ -133,6 +136,16 @@ export class PostgresStore implements Store {
 
   async markDownload(userId: string): Promise<void> {
     await this.pool.query('update users set last_download_at = now() where id = $1', [userId]);
+  }
+
+  async markOnboarded(userId: string): Promise<UserRecord> {
+    const { rows } = await this.pool.query<UserRow>(
+      `update users set onboarded_at = coalesce(onboarded_at, now()) where id = $1
+       returning ${USER_COLUMNS}`,
+      [userId],
+    );
+    if (!rows[0]) throw new Error(`unknown user ${userId}`);
+    return toUser(rows[0]);
   }
 
   async createSession(idHash: string, userId: string, expiresAt: Date): Promise<void> {

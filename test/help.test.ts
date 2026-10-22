@@ -11,7 +11,7 @@ const links = (html: string, prefix: string) =>
   [...html.matchAll(new RegExp(`href="${prefix}#([^"]+)"`, 'g'))].map((m) => m[1]!);
 
 describe('user guide', () => {
-  it('is public: quick start, search and every topic, with the server address', async () => {
+  it('is public: quick start, search and every topic, without the server address', async () => {
     t = await startApp();
     const res = await t.app.inject({ url: '/help' });
     expect(res.statusCode).toBe(200);
@@ -31,7 +31,9 @@ describe('user guide', () => {
     ])
       expect(html).toContain(`>${topic}</h2>`);
     expect(html).toContain('Агент просит разрешение — что выбрать?');
-    expect(html).toContain('<code>https://agent.test</code> и токен');
+    expect(html).toContain('Ключ подключения');
+    expect(html).toContain('Что значит «Изучение»');
+    expect(html).not.toContain('agent.test');
     // The landing links to it too.
     expect((await t.app.inject({ url: '/' })).body).toContain('href="/help"');
   });
@@ -42,10 +44,14 @@ describe('user guide', () => {
     const cookies = await signIn(t);
     const help = (await t.app.inject({ url: '/help', cookies })).body;
     const agents = (await t.app.inject({ url: '/agents', cookies })).body;
-    const cabinet = (await t.app.inject({ url: '/', cookies })).body;
+    const steps = await Promise.all(
+      [1, 2, 3, 4].map(
+        async (n) => (await t.app.inject({ url: `/start?step=${n}`, cookies })).body,
+      ),
+    );
     const helpIds = ids(help);
 
-    const intoGuide = [...links(agents, '/help'), ...links(cabinet, '/help')];
+    const intoGuide = [...links(agents, '/help'), ...steps.flatMap((x) => links(x, '/help'))];
     expect(intoGuide.length).toBeGreaterThan(8);
     for (const id of intoGuide) expect(helpIds, `/help#${id}`).toContain(id);
     for (const id of links(help, '')) expect(helpIds, `#${id}`).toContain(id);
@@ -61,8 +67,12 @@ describe('user guide', () => {
       expect(panel, `/agents?tab=${tab}`).toBeDefined();
       expect(ids(panel!), `/agents?tab=${tab}#${id}`).toContain(id!);
     }
-    const cabinetIds = ids(cabinet);
-    for (const id of links(help, '/')) expect(cabinetIds, `/#${id}`).toContain(id);
+    // Links to a step of the setup land on an anchor of that step.
+    expect(links(help, '/')).toEqual([]);
+    const toSteps = [...help.matchAll(/href="\/start\?step=(\d)#([^"]+)"/g)];
+    expect(toSteps.length).toBeGreaterThan(2);
+    for (const [, n, id] of toSteps)
+      expect(ids(steps[Number(n) - 1]!), `step ${n}#${id}`).toContain(id);
   });
 
   it('the agents page shows what is left to set up, with links to the guide', async () => {

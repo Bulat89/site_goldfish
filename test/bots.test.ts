@@ -6,16 +6,15 @@ import { BOTS_TOKEN, BOTS_URL, PUBLIC_URL, signIn, startApp, testConfig } from '
 const BOTS = { BOTS_URL, BOTS_API_TOKEN: BOTS_TOKEN };
 const OWNER = 'cl_1/yandex:1000001';
 
-describe('QR codes of the bots in the cabinet', () => {
+describe('QR codes of the bots in the setup', () => {
   it('shows a QR code with a one-time code for each messenger', async () => {
     const t = await startApp(BOTS);
     const cookies = await signIn(t);
-    const page = await t.app.inject({ url: '/', cookies });
+    const page = await t.app.inject({ url: '/start?step=3', cookies });
     expect(page.statusCode).toBe(200);
     const html = page.body;
-    expect(html).toContain('Четыре шага');
-    expect(html).toContain('id="bots"');
-    expect(html).toContain('Управляйте агентами из мессенджера');
+    expect(html).toContain('id="bot-title"');
+    expect(html).toContain('Бот для управления');
     expect(html.match(/<svg class="qr"/g)).toHaveLength(3);
     expect(html).toContain('href="https://t.me/goldfish_bot?start=TGCODE23"');
     expect(html).toContain('href="https://max.ru/goldfish_bot?start=MAXCODE2"');
@@ -39,9 +38,10 @@ describe('QR codes of the bots in the cabinet', () => {
       name: 'Иван',
       linkedAt: '2026-10-16T10:00:00.000Z',
     });
-    const cabinet = (await t.app.inject({ url: '/', cookies })).body;
-    expect(cabinet).toContain('привязан: Иван');
-    expect(cabinet).not.toContain('data-act="bot-unlink"');
+    const setup = (await t.app.inject({ url: '/start?step=3', cookies })).body;
+    expect(setup).toContain('привязан: Иван');
+    expect(setup).toContain('бот привязан');
+    expect(setup).not.toContain('data-act="bot-unlink"');
 
     const agents = (await t.app.inject({ url: '/agents?tab=settings', cookies })).body;
     expect(agents).toContain('Привязан Telegram');
@@ -82,10 +82,10 @@ describe('QR codes of the bots in the cabinet', () => {
     const t = await startApp(BOTS);
     const cookies = await signIn(t);
     t.fakes.botsDown = true;
-    const cabinet = await t.app.inject({ url: '/', cookies });
-    expect(cabinet.statusCode).toBe(200);
-    expect(cabinet.body).toContain('Сервер ботов сейчас не отвечает');
-    expect(cabinet.body).toContain('Скачать расширение');
+    const setup = await t.app.inject({ url: '/start?step=3', cookies });
+    expect(setup.statusCode).toBe(200);
+    expect(setup.body).toContain('Сервер ботов сейчас не отвечает');
+    expect(setup.body).toContain('Доступ к CRM');
     const agents = await t.app.inject({ url: '/agents', cookies });
     expect(agents.statusCode).toBe(200);
     expect(agents.body).toContain('Сервер ботов сейчас не отвечает');
@@ -94,9 +94,9 @@ describe('QR codes of the bots in the cabinet', () => {
   it('keeps the Telegram of Goldfish without a bots server', async () => {
     const t = await startApp();
     const cookies = await signIn(t);
-    const cabinet = (await t.app.inject({ url: '/', cookies })).body;
-    expect(cabinet).toContain('Три шага');
-    expect(cabinet).not.toContain('id="bots"');
+    const setup = (await t.app.inject({ url: '/start?step=3', cookies })).body;
+    expect(setup).toContain('data-act="telegram"');
+    expect(setup).not.toContain('<svg class="qr"');
     const agents = (await t.app.inject({ url: '/agents?tab=settings', cookies })).body;
     expect(agents).toContain('data-act="telegram"');
     expect(t.fakes.botCalls).toEqual([]);

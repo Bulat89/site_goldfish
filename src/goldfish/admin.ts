@@ -114,6 +114,21 @@ export class GoldfishAdmin {
   }
 
   /**
+   * Whether the user's extension has connected: online now, and when it was last seen. Null when
+   * the user is not on the server yet (no token was issued).
+   */
+  async extensionState(
+    userId: string,
+  ): Promise<{ online: boolean; lastSeenAt: string | null } | null> {
+    const clientId = await this.clientId();
+    const res = await this.call('GET', `/admin/users/${enc(clientId)}/${enc(userId)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new GoldfishError(`user: ${res.status}`, res.status);
+    const body = (await res.json()) as { online?: boolean; lastBrowserSeenAt?: string | null };
+    return { online: body.online === true, lastSeenAt: body.lastBrowserSeenAt ?? null };
+  }
+
+  /**
    * The hotel agents of a site user (goldfish /admin/users/:clientId/:userId/hotel…): the site
    * acts on the owner's behalf. Expected refusals (400) come back with the server's message.
    */

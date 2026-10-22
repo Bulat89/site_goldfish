@@ -33,19 +33,21 @@ document.addEventListener('click', async (event) => {
   if (text && (await copyText(text))) flashCopied(button);
 });
 
-const issueButton = document.getElementById('issue-token');
+// «Ключ подключения» on the first step of the setup: the server's address and the device token in
+// one value for the side panel of the extension. Shown once; a new key revokes the old one.
+const issueButton = document.getElementById('issue-key');
 if (issueButton) {
-  const row = document.getElementById('token-row');
-  const input = document.getElementById('token');
-  const error = document.getElementById('token-error');
-  const hint = document.getElementById('token-hint');
+  const row = document.getElementById('key-row');
+  const input = document.getElementById('key');
+  const error = document.getElementById('key-error');
+  const hint = document.getElementById('key-hint');
 
   issueButton.addEventListener('click', async () => {
-    const hasToken = issueButton.getAttribute('data-has-token') === '1';
+    const hasKey = issueButton.getAttribute('data-has-key') === '1';
     if (
-      hasToken &&
+      hasKey &&
       !confirm(
-        'Выпустить новый токен? Старый перестанет работать во всех браузерах, где он вставлен.',
+        'Выпустить новый ключ? Старый перестанет работать во всех браузерах, где он вставлен.',
       )
     )
       return;
@@ -63,15 +65,16 @@ if (issueButton) {
         location.href = '/auth/yandex';
         return;
       }
-      if (!res.ok || !body.token) throw new Error(body.message || 'Не удалось получить токен');
-      input.value = body.token;
+      if (!res.ok || !body.key) throw new Error(body.message || 'Не удалось получить ключ');
+      input.value = body.key;
       row.hidden = false;
       input.focus();
       input.select();
-      issueButton.textContent = 'Выпустить новый токен';
+      issueButton.textContent = 'Выпустить новый ключ';
       issueButton.classList.replace('btn--accent', 'btn--ghost');
-      issueButton.setAttribute('data-has-token', '1');
-      hint.textContent = 'Скопируйте токен сейчас — после обновления страницы он не будет показан.';
+      issueButton.setAttribute('data-has-key', '1');
+      hint.textContent =
+        'Скопируйте ключ сейчас и вставьте в боковой панели расширения — после обновления страницы он не будет показан.';
     } catch (err) {
       error.textContent = err.message;
       error.hidden = false;
@@ -79,6 +82,29 @@ if (issueButton) {
       issueButton.disabled = false;
     }
   });
+}
+
+// While the first step waits for the extension, it asks the server every 5 s and says when the
+// extension connected — in place: a reload would hide the key not yet pasted.
+const extState = document.querySelector('[data-ext-poll]');
+if (extState) {
+  const started = Date.now();
+  const tick = async () => {
+    try {
+      const res = await fetch('/api/onboarding/extension', { credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.connected) {
+        extState.classList.add('ext-state--on');
+        extState.querySelector('[data-ext-text]').textContent =
+          'Расширение подключено. Можно переходить к площадкам.';
+        return;
+      }
+    } catch {
+      // A network hiccup: try again on the next tick.
+    }
+    if (Date.now() - started < 60 * 60_000) setTimeout(tick, 5000);
+  };
+  setTimeout(tick, 5000);
 }
 
 // ---------------------------------------------------------------- agents page
@@ -222,6 +248,16 @@ function reloadWith(message) {
     alert(message);
   }
   location.reload();
+}
+
+/** Another page, with the message shown there at the bottom of the screen. */
+function goWith(url, message) {
+  try {
+    sessionStorage.setItem(FLASH_KEY, message);
+  } catch {
+    // Storage blocked: the page opens without the message.
+  }
+  location.href = url;
 }
 
 /** A change of settings; `done` says what changed, the manager's warnings follow it. */
@@ -406,7 +442,7 @@ const STATUS_HINTS = [
     'Уровень автономности 2: согласуйте задачу на вкладке «Сегодня» — дальше агент выполнит её сам.',
   ],
   [/^не запущено: уровень автономности/, 'Сменить уровень: «Команда» → «Режим работы».'],
-  [/расширение ещё ни разу/, 'Установите и подключите расширение — шаги в кабинете.'],
+  [/расширение ещё ни разу/, 'Установите и подключите расширение — шаг 1 настройки.'],
   [
     /нет подключённых систем/,
     'Отметьте нужные площадки в эталоне: «Объект» → «Системы и площадки».',
@@ -1279,3 +1315,146 @@ if (acceptForm)
         button.disabled = false;
       });
   });
+
+// ---------------------------------------------------------------- «Изучение»
+// After the setup the agents only read the cabinets. While a study runs the agents page asks for
+// it every 15 s and reloads when a cabinet is done; the owner ends it (the agents then work by
+// their rights) or studies the cabinets again.
+
+const studyPoll = document.querySelector('[data-study-poll]');
+if (studyPoll) {
+  const shown = studyPoll.getAttribute('data-study-poll');
+  const started = Date.now();
+  const tick = async () => {
+    try {
+      const res = await fetch('/api/agents/study', { credentials: 'same-origin' });
+      const data = await res.json().catch(() => null);
+      const state = data && JSON.stringify((data.items ?? []).map((x) => [x.system, x.status]));
+      if (res.ok && data && (!data.on || state !== shown)) return location.reload();
+    } catch {
+      // A network hiccup: try again on the next tick.
+    }
+    if (Date.now() - started < 60 * 60_000) setTimeout(tick, 15_000);
+  };
+  setTimeout(tick, 15_000);
+}
+
+document.querySelectorAll('[data-act="study-end"]').forEach((button) =>
+  button.addEventListener(
+    'click',
+    guarded(async () => {
+      if (!(await askConfirm(button.getAttribute('data-confirm')))) return;
+      button.disabled = true;
+      await agentsCall('POST', '/api/agents/study', { on: false });
+      reloadWith('Изучение закончено — агенты работают по своим правам.');
+    }),
+  ),
+);
+
+document.querySelectorAll('[data-act="study-start"]').forEach((button) =>
+  button.addEventListener(
+    'click',
+    guarded(async () => {
+      button.disabled = true;
+      await agentsCall('POST', '/api/agents/study', { on: true });
+      reloadWith('Агенты снова изучают ваши кабинеты — ничего не меняя.');
+    }),
+  ),
+);
+
+// ---------------------------------------------------------------- setup wizard
+// Every step saves through /api/onboarding/* (same origin, session cookie); the site forwards it to
+// the Goldfish server on the owner's behalf and says what did not go through.
+
+/** The form's own error line, under its fields. */
+function formError(form, message) {
+  const box = form.querySelector('[data-form-error]');
+  if (!box) return showError(message);
+  box.textContent = message;
+  box.hidden = !message;
+}
+
+function setupForm(name, submit) {
+  const form = document.querySelector(`form[data-form="${name}"]`);
+  if (!form) return;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    formError(form, '');
+    button.disabled = true;
+    try {
+      await submit(form);
+    } catch (err) {
+      formError(form, err.message);
+      button.disabled = false;
+    }
+  });
+}
+
+// Step 2: a field per platform; the radio marks the reference listing the agent reads.
+setupForm('setup-listings', async (form) => {
+  const listings = [...form.querySelectorAll('input[name="listing"]')].map((input) => ({
+    platform: input.getAttribute('data-platform'),
+    url: input.value.trim(),
+  }));
+  for (const l of listings)
+    if (l.url && !/^https?:\/\//i.test(l.url)) {
+      form.querySelector(`input[data-platform="${l.platform}"]`).focus();
+      throw new Error('Вставьте ссылку на объявление целиком, с https://');
+    }
+  const filled = listings.filter((l) => l.url);
+  const checked = form.querySelector('input[name="reference"]:checked');
+  let reference = checked ? checked.value : null;
+  if (reference && !filled.some((l) => l.platform === reference)) reference = null;
+  // One guest listing and no choice: it is the reference.
+  const guest = [...form.querySelectorAll('input[name="reference"]')].map((r) => r.value);
+  if (!reference) {
+    const only = filled.filter((l) => guest.includes(l.platform));
+    if (only.length === 1) reference = only[0].platform;
+  }
+  if (filled.length && !reference)
+    throw new Error('Отметьте эталонное объявление — кружком слева от площадки');
+  const data = await agentsCall('POST', '/api/onboarding/listings', { listings, reference });
+  goWith(
+    '/start?step=3',
+    data.importStarted
+      ? 'Объявления сохранены. Агент читает эталонное объявление — черновик эталона появится на шаге 2.'
+      : 'Объявления сохранены.',
+  );
+});
+
+// Step 3: the CRM; the address field follows the CRM chosen, «Нет CRM» needs none.
+const crmForm = document.querySelector('form[data-form="setup-crm"]');
+if (crmForm) {
+  const select = crmForm.elements.system;
+  const url = crmForm.elements.url;
+  const follow = () => {
+    const option = select.selectedOptions[0];
+    url.disabled = select.value === 'none';
+    if (option && option.getAttribute('data-placeholder'))
+      url.placeholder = option.getAttribute('data-placeholder');
+  };
+  select.addEventListener('change', follow);
+  follow();
+}
+setupForm('setup-crm', async (form) => {
+  const system = form.elements.system.value;
+  if (!system) throw new Error('Выберите вашу CRM');
+  await agentsCall('POST', '/api/onboarding/crm', { system, url: form.elements.url.value.trim() });
+  reloadWith(system === 'none' ? 'Сохранено: CRM нет.' : 'Кабинет CRM сохранён.');
+});
+
+// Step 4: the team, the autonomy after the study, and the launch of the study.
+setupForm('setup-team', async (form) => {
+  const agents = [...form.querySelectorAll('input[name="agent"]:checked')].map((x) => x.value);
+  if (!agents.length) throw new Error('Отметьте хотя бы одного агента');
+  const level = form.querySelector('input[name="autonomy"]:checked');
+  const data = await agentsCall('POST', '/api/onboarding/finish', {
+    agents,
+    ...(level ? { autonomy: Number(level.value) } : {}),
+  });
+  goWith(
+    data.redirect || '/agents',
+    'Готово: агенты изучают ваши кабинеты и ничего не меняют. Как идёт изучение — вверху страницы.',
+  );
+});

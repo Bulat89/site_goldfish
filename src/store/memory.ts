@@ -19,6 +19,7 @@ export class MemoryStore implements Store {
           tokenId: null,
           tokenIssuedAt: null,
           lastDownloadAt: null,
+          onboardedAt: null,
         };
     this.users.set(user.id, user);
     return { ...user };
@@ -40,6 +41,14 @@ export class MemoryStore implements Store {
   async markDownload(userId: string): Promise<void> {
     const user = this.users.get(userId);
     if (user) user.lastDownloadAt = new Date().toISOString();
+  }
+
+  async markOnboarded(userId: string): Promise<UserRecord> {
+    const user = this.users.get(userId);
+    if (!user) throw new Error(`unknown user ${userId}`);
+    // The first finish counts: the wizard opened again does not move it.
+    user.onboardedAt ??= new Date().toISOString();
+    return { ...user };
   }
 
   async createSession(idHash: string, userId: string, expiresAt: Date): Promise<void> {
