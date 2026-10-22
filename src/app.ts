@@ -11,38 +11,34 @@ import { connectionKey, openExtension } from './extension.js';
 import { GoldfishError } from './goldfish/admin.js';
 import { renderHelp } from './pages/help.js';
 import {
-  AGENT_TABS,
-  renderNotFound,
-  renderPage,
-  type AgentTab,
-  type Notice,
-} from './pages/page.js';
-import { renderPrices, type PriceBoardView } from './pages/prices.js';
-import {
   deskFromParts,
-  renderAgents,
-  statusStrip,
-  tabCount,
+  renderProperty,
+  renderTeam,
+  renderToday,
   todayPanel,
-  type AgentsState,
   type ApprovalView,
+  type CompetitorSearchView,
   type DeskView,
+  type ExtensionState,
   type FeedItem,
   type HotelView,
   type KpiView,
-  type ProfileImportView,
   type ListingSearchView,
-  type CompetitorSearchView,
+  type ProfileImportView,
   type StudyView,
+  START_AUTONOMY,
 } from './pages/agents.js';
 import type { BotsState } from './pages/bots.js';
+import { tabCount, type CabinetState } from './pages/cabinet.js';
 import {
-  SETUP_STEPS,
-  firstOpenStep,
-  renderSetup,
-  type SetupState,
-  type SetupStep,
-} from './pages/setup.js';
+  TAB_PATH,
+  renderNotFound,
+  renderPage,
+  type CabinetTab,
+  type Notice,
+} from './pages/page.js';
+import { renderPrices, type PriceBoardView } from './pages/prices.js';
+import { renderSettings } from './pages/settings.js';
 import type { Services } from './services.js';
 import { registerStatic } from './static.js';
 import type { UserRecord } from './store/types.js';
@@ -137,16 +133,14 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     }
   };
 
-  // A guest gets the landing; the owner — the setup wizard until it is finished, then the agents.
+  // A guest gets the landing; the owner — the personal cabinet.
   app.get('/', async (req, reply) => {
     const user = await sessions.user(req);
     const q = req.query as { login?: string };
     const notice: Notice | null = (q.login && NOTICES[q.login]) || null;
     const access = user ? accessOf(user) : null;
     if (user && access?.allowed)
-      return reply
-        .header('cache-control', 'no-store')
-        .redirect(user.onboardedAt ? '/agents' : '/start');
+      return reply.header('cache-control', 'no-store').redirect(TAB_PATH.today);
     return reply
       .type('text/html; charset=utf-8')
       .header('cache-control', 'private, no-store')
@@ -221,7 +215,7 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     } catch (err) {
       req.log.error({ err }, 'extension download failed');
     }
-    return reply.redirect('/start?step=1&download=unavailable');
+    return reply.redirect(`${TAB_PATH.settings}?download=unavailable#extension-title`);
   });
 
   app.post('/api/token', async (req, reply) => {
@@ -280,110 +274,248 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     kpi: null,
   };
 
-  app.get('/agents', async (req, reply) => {
+  // ---------------------------------------------------------------- the personal cabinet
+  // One section — one page; each asks Goldfish only for what it shows. Everything an owner does
+  // lives here: the first steps and the decisions, the agents, the property, the prices, the
+  // settings.
+
+  /** The signed-in owner of a cabinet page; for anyone else the redirect is sent and null returned. */
+  const cabinetOwner = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<UserRecord | null> => {
     const user = await sessions.user(req);
-    if (!user) return reply.redirect('/auth/yandex');
-    if (!accessOf(user).allowed) return reply.redirect('/');
+    if (!user) {
+      void reply.redirect('/auth/yandex');
+      return null;
+    }
+    if (!accessOf(user).allowed) {
+      void reply.redirect('/');
+      return null;
+    }
+    return user;
+  };
+
+  /** What a page says when Goldfish did not answer; the restart also reloads the page by itself. */
+  const unreachable = (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    err: unknown,
+    page: string,
+  ): string => {
+    // 2026-10-14 16:38: the deploy of Goldfish gave the page «unavailable» and the journal an error.
+    if (restarting(err)) {
+      req.log.info({ status: err.status }, `${page} page: goldfish restarting, the page reloads`);
+      reply.header('refresh', String(RELOAD_SECONDS));
+      return RESTARTING_NOTICE;
+    }
+    req.log.error({ err }, `${page} page: goldfish unavailable`);
+    return 'Сервер агентов сейчас недоступен — попробуйте через минуту.';
+  };
+
+  const hotelOf = async (gf: string): Promise<HotelView> => {
+    const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
+    if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
+    return hotel.body;
+  };
+
+  /**
+   * How many decisions wait, for the count on «Сегодня» in every section. Only a count: when the
+   * desk is silent the tab goes without it.
+   */
+  const waitingOf = async (gf: string): Promise<CabinetState['waiting']> => {
+    try {
+      const desk = await s.goldfish.hotel<DeskView>(gf, 'GET', '/manager');
+      if (desk.status === 200) return desk.body.status;
+      const list = await s.goldfish.hotel<ApprovalView[]>(gf, 'GET', '/approvals?status=pending');
+      return list.status === 200
+        ? { pending: list.body.length, urgent: list.body.filter((a) => a.urgent).length }
+        : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const send = (reply: FastifyReply, html: string) =>
+    reply.type('text/html; charset=utf-8').header('cache-control', 'private, no-store').send(html);
+
+  // «Сегодня»: the first steps, the study, then what waits for the owner.
+  app.get(TAB_PATH.today, async (req, reply) => {
+    const user = await cabinetOwner(req, reply);
+    if (!user) return reply;
     const gf = goldfishUserId(user);
-    const tab = (req.query as { tab?: string }).tab;
-    let state: AgentsState = {
+    let state: Parameters<typeof renderToday>[0] = {
       ...view,
       user,
-      tab: AGENT_TABS.includes(tab as AgentTab) ? (tab as AgentTab) : 'today',
       hotel: null,
       desk: EMPTY_DESK,
+      study: null,
+      extension: null,
       error: null,
     };
-    const bots = botsOf(user, req);
+    // Without link codes: «Сегодня» only needs to know whether a chat is linked.
+    const bots = botsOf(user, req, false);
     try {
-      const [hotel, desk, profileImport, listings, competitorSearch, study] = await Promise.all([
-        s.goldfish.hotel<HotelView>(gf, 'GET', ''),
+      const [hotel, desk, study, extension] = await Promise.all([
+        hotelOf(gf),
         s.goldfish.hotel<DeskView>(gf, 'GET', '/manager'),
+        s.goldfish.hotel<StudyView>(gf, 'GET', '/study'),
+        s.goldfish.extensionState(gf).catch((): ExtensionState | null => null),
+      ]);
+      const full = await loadDesk(gf, hotel, desk);
+      state = {
+        ...state,
+        hotel,
+        desk: full,
+        waiting: full.status,
+        // An older Goldfish without «Изучение» answers 404: the page goes without the card.
+        study: study.status === 200 ? study.body : null,
+        extension,
+      };
+    } catch (err) {
+      state.error = unreachable(req, reply, err, 'today');
+    }
+    state.bots = await bots;
+    return send(reply, renderToday(state));
+  });
+
+  // «Агенты»: the mode of work, the agents and their rights, the platforms.
+  app.get(TAB_PATH.agents, async (req, reply) => {
+    const user = await cabinetOwner(req, reply);
+    if (!user) return reply;
+    const gf = goldfishUserId(user);
+    const state: CabinetState = { ...view, user, hotel: null, error: null };
+    try {
+      [state.hotel, state.waiting] = await Promise.all([hotelOf(gf), waitingOf(gf)]);
+    } catch (err) {
+      state.error = unreachable(req, reply, err, 'agents');
+    }
+    return send(reply, renderTeam(state));
+  });
+
+  // «Объект»: the reference, where the property is listed, the competitors.
+  app.get(TAB_PATH.property, async (req, reply) => {
+    const user = await cabinetOwner(req, reply);
+    if (!user) return reply;
+    const gf = goldfishUserId(user);
+    let state: Parameters<typeof renderProperty>[0] = {
+      ...view,
+      user,
+      hotel: null,
+      profileImport: null,
+      listings: null,
+      competitorSearch: null,
+      error: null,
+    };
+    try {
+      const [hotel, profileImport, listings, competitorSearch, waiting] = await Promise.all([
+        hotelOf(gf),
         s.goldfish.hotel<ProfileImportView | null>(gf, 'GET', '/profile/import'),
         s.goldfish.hotel<ListingSearchView | null>(gf, 'GET', '/listings'),
         s.goldfish.hotel<CompetitorSearchView | null>(gf, 'GET', '/competitors'),
-        s.goldfish.hotel<StudyView>(gf, 'GET', '/study'),
+        waitingOf(gf),
       ]);
-      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
       state = {
         ...state,
-        hotel: hotel.body,
-        desk: await loadDesk(gf, hotel.body, desk),
+        hotel,
+        waiting,
         profileImport: profileImport.status === 200 ? profileImport.body : null,
         // An older Goldfish without the searches answers 404: the blocks offer to start them.
         listings: listings.status === 200 ? listings.body : null,
         competitorSearch: competitorSearch.status === 200 ? competitorSearch.body : null,
-        // An older Goldfish without «Изучение» answers 404: the page goes without the card.
-        study: study.status === 200 ? study.body : null,
       };
     } catch (err) {
-      // 2026-10-14 16:38: the deploy of Goldfish gave the page «unavailable» and the journal an error.
-      if (restarting(err)) {
-        req.log.info({ status: err.status }, 'agents page: goldfish restarting, the page reloads');
-        reply.header('refresh', String(RELOAD_SECONDS));
-        state.error = RESTARTING_NOTICE;
-      } else {
-        req.log.error({ err }, 'agents page: goldfish unavailable');
-        state.error = 'Сервер агентов сейчас недоступен — попробуйте через минуту.';
-      }
+      state.error = unreachable(req, reply, err, 'property');
     }
-    state.bots = await bots;
-    return reply
-      .type('text/html; charset=utf-8')
-      .header('cache-control', 'private, no-store')
-      .send(renderAgents(state));
+    return send(reply, renderProperty(state));
   });
 
   // «Цены»: the direct competitors' prices with proofs and the recommendation.
-  app.get('/agents/prices', async (req, reply) => {
-    const user = await sessions.user(req);
-    if (!user) return reply.redirect('/auth/yandex');
-    if (!accessOf(user).allowed) return reply.redirect('/');
+  app.get(TAB_PATH.prices, async (req, reply) => {
+    const user = await cabinetOwner(req, reply);
+    if (!user) return reply;
     const gf = goldfishUserId(user);
-    let state: Parameters<typeof renderPrices>[0] = {
+    const state: Parameters<typeof renderPrices>[0] = {
       ...view,
       user,
-      hotelName: null,
+      hotel: null,
       board: null,
       error: null,
     };
     try {
-      const [hotel, board] = await Promise.all([
+      const [hotel, board, waiting] = await Promise.all([
         s.goldfish.hotel<HotelView>(gf, 'GET', ''),
         s.goldfish.hotel<PriceBoardView>(gf, 'GET', '/prices'),
+        waitingOf(gf),
       ]);
+      state.hotel = hotel.status === 200 ? hotel.body : null;
+      state.waiting = waiting;
       // An older Goldfish has no «Цены» yet: say so rather than «unavailable».
-      if (board.status === 404) {
+      if (board.status === 404)
         state.error = 'Сервер агентов ещё не умеет считать цены конкурентов — его нужно обновить.';
-        return reply
-          .type('text/html; charset=utf-8')
-          .header('cache-control', 'private, no-store')
-          .send(renderPrices(state));
-      }
-      if (board.status !== 200) throw new Error(`prices: ${board.status}`);
-      state = {
-        ...state,
-        hotelName: hotel.status === 200 ? String(hotel.body.profile.name ?? '') || null : null,
-        board: board.body,
-      };
+      else if (board.status !== 200) throw new Error(`prices: ${board.status}`);
+      else state.board = board.body;
     } catch (err) {
-      if (restarting(err)) {
-        req.log.info({ status: err.status }, 'prices page: goldfish restarting, the page reloads');
-        reply.header('refresh', String(RELOAD_SECONDS));
-        state.error = RESTARTING_NOTICE;
-      } else {
-        req.log.error({ err }, 'prices page: goldfish unavailable');
-        state.error = 'Сервер агентов сейчас недоступен — попробуйте через минуту.';
-      }
+      state.error = unreachable(req, reply, err, 'prices');
     }
-    return reply
-      .type('text/html; charset=utf-8')
-      .header('cache-control', 'private, no-store')
-      .send(renderPrices(state));
+    return send(reply, renderPrices(state));
   });
 
+  // «Настройки»: the extension and its key, the CRM, the messengers, the manager, the account.
+  app.get(TAB_PATH.settings, async (req, reply) => {
+    const user = await cabinetOwner(req, reply);
+    if (!user) return reply;
+    const gf = goldfishUserId(user);
+    const q = req.query as { download?: string };
+    const state: Parameters<typeof renderSettings>[0] = {
+      ...view,
+      user,
+      hotel: null,
+      extension: null,
+      downloadFailed: q.download === 'unavailable',
+      error: null,
+    };
+    // The one-time codes for the QR codes are made here and nowhere else.
+    const bots = botsOf(user, req);
+    // The extension and the account need no property: the page shows them while Goldfish is down.
+    const [hotel, extension, waiting] = await Promise.all([
+      hotelOf(gf).catch((err: unknown) => {
+        state.error = unreachable(req, reply, err, 'settings');
+        return null;
+      }),
+      s.goldfish.extensionState(gf).catch((): ExtensionState | null => null),
+      waitingOf(gf),
+    ]);
+    state.hotel = hotel;
+    state.extension = extension;
+    state.waiting = waiting;
+    state.bots = await bots;
+    return send(reply, renderSettings(state));
+  });
+
+  // The addresses of the earlier site: its wizard and its agents page are the cabinet now.
+  const AT_STEP: Record<string, string> = {
+    '1': `${TAB_PATH.settings}#extension-title`,
+    '2': `${TAB_PATH.property}#listings-title`,
+    '3': `${TAB_PATH.settings}#crm-title`,
+    '4': TAB_PATH.today,
+  };
+  const AT_TAB: Record<string, CabinetTab> = {
+    today: 'today',
+    team: 'agents',
+    property: 'property',
+    settings: 'settings',
+  };
+  app.get('/start', async (req, reply) =>
+    reply.redirect(AT_STEP[(req.query as { step?: string }).step ?? ''] ?? TAB_PATH.today),
+  );
+  app.get('/agents', async (req, reply) =>
+    reply.redirect(TAB_PATH[AT_TAB[(req.query as { tab?: string }).tab ?? ''] ?? 'today']),
+  );
+  app.get('/agents/prices', async (_req, reply) => reply.redirect(TAB_PATH.prices));
+
   /**
-   * Changes from the agents page, proxied to Goldfish on the owner's behalf. Only from this site's
+   * Changes from the cabinet, proxied to Goldfish on the owner's behalf. Only from this site's
    * pages, only for a signed-in user with access; the server's refusals come back as they are.
    */
   const proxy =
@@ -449,21 +581,17 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     if (!accessOf(user).allowed) return reply.code(403).send({ error: 'no_access' });
     const gf = goldfishUserId(user);
     try {
-      // The chats linked, without fresh link codes: those are made only for the QR codes.
-      const [hotel, desk, bots] = await Promise.all([
-        s.goldfish.hotel<HotelView>(gf, 'GET', ''),
+      const [hotel, desk] = await Promise.all([
+        hotelOf(gf),
         s.goldfish.hotel<DeskView>(gf, 'GET', '/manager'),
-        botsOf(user, req, false),
       ]);
-      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
-      const st = { hotel: hotel.body, desk: await loadDesk(gf, hotel.body, desk), bots };
+      const full = await loadDesk(gf, hotel, desk);
       return {
-        rev: st.desk.rev,
-        pending: st.desk.status.pending,
-        urgent: st.desk.status.urgent,
-        today: todayPanel(st),
-        strip: statusStrip(st),
-        count: tabCount(st.desk.status),
+        rev: full.rev,
+        pending: full.status.pending,
+        urgent: full.status.urgent,
+        today: todayPanel({ user, hotel, desk: full }),
+        count: tabCount(full.status),
       };
     } catch (err) {
       // The page asks again in a while: a restart of Goldfish is a missed tick.
@@ -524,20 +652,12 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
   const platform = (req: FastifyRequest) =>
     encodeURIComponent((req.params as { platform: string }).platform);
   app.post(
-    '/api/agents/next-steps',
-    proxy('POST', () => '/next-steps'),
-  );
-  app.post(
     '/api/agents/listings',
     proxy('POST', () => '/listings'),
   );
   app.post(
     '/api/agents/listings/sync',
     proxy('POST', () => '/listings/sync'),
-  );
-  app.post(
-    '/api/agents/listings/manual',
-    proxy('POST', () => '/listings/manual'),
   );
   app.post(
     '/api/agents/listings/:id/:platform',
@@ -581,7 +701,9 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
       }
     });
 
-  // ---------------------------------------------------------------- setup wizard
+  // ---------------------------------------------------------------- setting up
+  // «Первые шаги» and «Настройки» save through these: same origin, session cookie; the site
+  // forwards to Goldfish on the owner's behalf and says what did not go through.
 
   /** The site's own page, a signed-in user with access: the user, or null with the answer sent. */
   const owner = async (
@@ -618,62 +740,8 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     });
   };
 
-  /**
-   * «Настройка»: the extension, the listings with the reference one, the CRM and the bot, the
-   * team. `?step=` opens a step; without it — the first one with something left to do.
-   */
-  app.get('/start', async (req, reply) => {
-    const user = await sessions.user(req);
-    if (!user) return reply.redirect('/auth/yandex');
-    if (!accessOf(user).allowed) return reply.redirect('/');
-    const q = req.query as { step?: string; download?: string };
-    const asked = SETUP_STEPS.find((n) => String(n) === q.step);
-    const gf = goldfishUserId(user);
-    const state: SetupState = {
-      ...view,
-      user,
-      step: asked ?? 1,
-      hotel: null,
-      profileImport: null,
-      extension: null,
-      study: null,
-      downloadFailed: q.download === 'unavailable',
-      error: null,
-    };
-    // One-time codes for the QR codes only where the bot is shown (or the step is not known yet).
-    const bots = botsOf(user, req, !asked || asked === 3);
-    try {
-      const [hotel, profileImport, extension, study] = await Promise.all([
-        s.goldfish.hotel<HotelView>(gf, 'GET', ''),
-        s.goldfish.hotel<ProfileImportView | null>(gf, 'GET', '/profile/import'),
-        s.goldfish.extensionState(gf),
-        s.goldfish.hotel<StudyView>(gf, 'GET', '/study'),
-      ]);
-      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
-      state.hotel = hotel.body;
-      state.profileImport = profileImport.status === 200 ? profileImport.body : null;
-      state.extension = extension;
-      state.study = study.status === 200 ? study.body : null;
-    } catch (err) {
-      if (restarting(err)) {
-        req.log.info({ status: err.status }, 'setup page: goldfish restarting, the page reloads');
-        reply.header('refresh', String(RELOAD_SECONDS));
-        state.error = RESTARTING_NOTICE;
-      } else {
-        req.log.error({ err }, 'setup page: goldfish unavailable');
-        state.error = 'Сервер агентов сейчас недоступен — попробуйте через минуту.';
-      }
-    }
-    state.bots = await bots;
-    if (!asked) state.step = firstOpenStep(state);
-    return reply
-      .type('text/html; charset=utf-8')
-      .header('cache-control', 'private, no-store')
-      .send(renderSetup(state));
-  });
-
-  // Step 1 asks while it waits for the extension (a read: the session is enough).
-  app.get('/api/onboarding/extension', async (req, reply) => {
+  // «Расширение» asks while it waits for the extension (a read: the session is enough).
+  app.get('/api/extension', async (req, reply) => {
     const user = await owner(req, reply, false);
     if (!user) return reply;
     try {
@@ -690,16 +758,15 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
   });
 
   /**
-   * Step 2: the owner's listings — each new address is registered on its platform (the server
-   * checks it is that platform's), a cleared one leaves the reference — and the reference listing,
-   * which the agent reads into a draft of the reference. What went through stays.
+   * «Объявления на площадках»: a field per platform. Each new address is registered on its platform
+   * (the server checks it is that platform's), a cleared one leaves the reference. What went
+   * through stays; what did not is said.
    */
-  app.post('/api/onboarding/listings', async (req, reply) => {
+  app.post('/api/agents/listings/links', async (req, reply) => {
     const user = await owner(req, reply);
     if (!user) return reply;
-    const body = (req.body ?? {}) as { listings?: unknown; reference?: unknown };
+    const body = (req.body ?? {}) as { listings?: unknown };
     const listings = Array.isArray(body.listings) ? body.listings : null;
-    const reference = typeof body.reference === 'string' ? body.reference : null;
     if (
       !listings ||
       listings.length > 30 ||
@@ -715,10 +782,9 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
       return reply.code(400).send({ error: 'bad_request', message: 'какие объявления сохранить?' });
     const gf = goldfishUserId(user);
     try {
-      const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
-      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
-      const title = new Map(hotel.body.settings.platforms.map((p) => [p.id, p.title]));
-      const systems = (hotel.body.profile.systems ?? []) as Array<
+      const hotel = await hotelOf(gf);
+      const title = new Map(hotel.settings.platforms.map((p) => [p.id, p.title]));
+      const systems = (hotel.profile.systems ?? []) as Array<
         Record<string, unknown> & { id: string }
       >;
       const known = new Map(systems.map((x) => [x.id, String(x.listingUrl ?? '')]));
@@ -740,8 +806,7 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
         listings.filter((l) => !l.url.trim() && known.get(l.platform)).map((l) => l.platform),
       );
       if (cleared.size) {
-        const fresh = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
-        const profile = fresh.body.profile;
+        const profile = (await hotelOf(gf)).profile;
         const next = ((profile.systems ?? []) as Array<Record<string, unknown> & { id: string }>)
           .map((x) => {
             if (!cleared.has(x.id)) return x;
@@ -752,48 +817,20 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
         const r = await s.goldfish.hotel(gf, 'PUT', '/profile', { ...profile, systems: next });
         if (r.status !== 200) errors.push(refusal(r.body, 'не удалось убрать объявление'));
       }
-      let importStarted = false;
-      if (reference) {
-        const url = listings.find((l) => l.platform === reference)?.url.trim();
-        if (!url) errors.push('Эталонное объявление: вставьте ссылку на него');
-        else {
-          const latest = await s.goldfish.hotel<ProfileImportView | null>(
-            gf,
-            'GET',
-            '/profile/import',
-          );
-          const same =
-            latest.status === 200 &&
-            latest.body?.url === url &&
-            latest.body.status !== 'failed' &&
-            latest.body.status !== 'discarded';
-          if (!same) {
-            const r = await s.goldfish.hotel<ProfileImportView>(gf, 'POST', '/profile/import', {
-              url,
-            });
-            if (r.status !== 201) errors.push(`Эталон: ${refusal(r.body, 'не получилось')}`);
-            else if (r.body.status === 'failed')
-              errors.push(`Эталон: ${r.body.error ?? 'не получилось прочитать объявление'}`);
-            else importStarted = true;
-          }
-        }
-      }
       if (errors.length)
-        return reply
-          .code(400)
-          .send({ error: 'bad_request', message: errors.join('; '), importStarted });
-      req.log.info({ userId: user.id, importStarted }, 'setup: listings saved');
-      return { ok: true, importStarted };
+        return reply.code(400).send({ error: 'bad_request', message: errors.join('; ') });
+      req.log.info({ userId: user.id }, 'setup: listings saved');
+      return { ok: true };
     } catch (err) {
       return unavailable(reply, req, err);
     }
   });
 
   /**
-   * Step 3: the cabinet of the owner's CRM (PMS or a chessboard table) — one: another chosen before
-   * leaves «Системы и площадки». «none» — no CRM, the bookings are kept by hand.
+   * «Кабинет вашей CRM» (a PMS or a chessboard table) — one: another chosen before leaves the
+   * reference. «none» — no CRM, the bookings are kept by hand.
    */
-  app.post('/api/onboarding/crm', async (req, reply) => {
+  app.post('/api/agents/crm', async (req, reply) => {
     const user = await owner(req, reply);
     if (!user) return reply;
     const body = (req.body ?? {}) as { system?: unknown; url?: unknown };
@@ -808,13 +845,12 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
       });
     const gf = goldfishUserId(user);
     try {
-      const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
-      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
-      const category = new Map(hotel.body.settings.platforms.map((p) => [p.id, p.category]));
+      const hotel = await hotelOf(gf);
+      const category = new Map(hotel.settings.platforms.map((p) => [p.id, p.category]));
       const crm = (id: string) => ['pms', 'sheet'].includes(category.get(id) ?? '');
       if (system !== 'none' && !crm(system))
         return reply.code(400).send({ error: 'bad_request', message: 'Такой CRM нет в списке' });
-      const profile = hotel.body.profile;
+      const profile = hotel.profile;
       const systems = (profile.systems ?? []) as Array<Record<string, unknown> & { id: string }>;
       const was = systems.find((x) => x.id === system);
       const next = [
@@ -834,24 +870,62 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
   });
 
   /**
-   * Step 4: «Изучение» — the agents go through the cabinets and change nothing — then the team the
-   * owner chose and the autonomy level. The wizard is finished once both went through.
+   * The list of competitors, as the owner edited it by hand. Only the list is changed, on the
+   * profile as the server has it now: what the agent found since the page was opened stays in the
+   * rest of the reference.
    */
-  app.post('/api/onboarding/finish', async (req, reply) => {
+  app.post('/api/agents/competitors/list', async (req, reply) => {
     const user = await owner(req, reply);
     if (!user) return reply;
-    const body = (req.body ?? {}) as { agents?: unknown; autonomy?: unknown };
-    const chosen = new Set(
-      Array.isArray(body.agents) ? body.agents.filter((a) => typeof a === 'string') : [],
-    );
-    if (!chosen.size)
-      return reply
-        .code(400)
-        .send({ error: 'bad_request', message: 'Отметьте хотя бы одного агента' });
+    const body = (req.body ?? {}) as { competitors?: unknown };
+    const list = Array.isArray(body.competitors) ? body.competitors : null;
+    if (
+      !list ||
+      list.length > 10 ||
+      !list.every(
+        (c): c is { name: string; url: string } =>
+          !!c &&
+          typeof (c as { name?: unknown }).name === 'string' &&
+          typeof (c as { url?: unknown }).url === 'string' &&
+          !!(c as { name: string }).name.trim() &&
+          (c as { name: string }).name.length <= 200 &&
+          /^https?:\/\/\S+$/i.test((c as { url: string }).url.trim()) &&
+          (c as { url: string }).url.length <= 1000,
+      )
+    )
+      return reply.code(400).send({
+        error: 'bad_request',
+        message:
+          'У каждого конкурента — название и ссылка на его страницу, с https://; не больше 10',
+      });
     const gf = goldfishUserId(user);
     try {
-      const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
-      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
+      const profile = (await hotelOf(gf)).profile;
+      const competitors = list.map((c) => ({ ...c, name: c.name.trim(), url: c.url.trim() }));
+      const r = await s.goldfish.hotel(gf, 'PUT', '/profile', { ...profile, competitors });
+      if (r.status !== 200)
+        return reply
+          .code(400)
+          .send({ error: 'bad_request', message: refusal(r.body, 'не сохранилось') });
+      req.log.info({ userId: user.id, count: competitors.length }, 'setup: competitors saved');
+      return { ok: true };
+    } catch (err) {
+      return unavailable(reply, req, err);
+    }
+  });
+
+  /**
+   * «Запустить изучение», the last of the first steps: the agents go through the cabinets and
+   * change nothing. A team that was never switched on starts whole; the level of autonomy is the
+   * one to start with unless the owner chose another. The owner is done with the first steps once
+   * the study began.
+   */
+  app.post('/api/agents/launch', async (req, reply) => {
+    const user = await owner(req, reply);
+    if (!user) return reply;
+    const gf = goldfishUserId(user);
+    try {
+      const hotel = await hotelOf(gf);
       // The study first: refused (no extension yet), nothing is switched; on, the agents switched
       // on next only read.
       const study = await s.goldfish.hotel(gf, 'POST', '/study', { on: true });
@@ -864,29 +938,28 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
         return reply
           .code(400)
           .send({ error: 'bad_request', message: refusal(study.body, 'изучение не началось') });
-      const set = hotel.body.settings;
-      const changes: Array<Record<string, unknown>> = set.agents
-        .filter((a) => a.enabled !== chosen.has(a.id))
-        .map((a) => ({ op: 'agent', agent: a.id, enabled: chosen.has(a.id) }));
-      const level = Number(body.autonomy);
-      if (set.autonomyLevels?.some((l) => l.level === level) && level !== set.autonomy)
-        changes.push({ op: 'autonomy', level });
+      const set = hotel.settings;
+      const changes: Array<Record<string, unknown>> = [];
+      if (!set.agents.some((a) => a.enabled))
+        for (const a of set.agents) changes.push({ op: 'agent', agent: a.id, enabled: true });
+      if (set.autonomy === 4 && set.autonomyLevels?.some((l) => l.level === START_AUTONOMY))
+        changes.push({ op: 'autonomy', level: START_AUTONOMY });
       if (changes.length) {
         const r = await s.goldfish.hotel(gf, 'POST', '/settings', { changes });
         if (r.status !== 200)
           return reply
             .code(400)
-            .send({ error: 'bad_request', message: refusal(r.body, 'команда не сохранилась') });
+            .send({ error: 'bad_request', message: refusal(r.body, 'агенты не включились') });
       }
       await store.markOnboarded(user.id);
-      req.log.info({ userId: user.id, agents: [...chosen] }, 'setup finished: the agents study');
-      return { ok: true, redirect: '/agents' };
+      req.log.info({ userId: user.id, agents: changes.length }, 'agents launched: the study began');
+      return { ok: true, redirect: TAB_PATH.today };
     } catch (err) {
       return unavailable(reply, req, err);
     }
   });
 
-  // A chat linked to a bot, unlinked from the agents page (only the owner's own chats).
+  // A chat linked to a bot, unlinked from the cabinet (only the owner's own chats).
   app.post('/api/bots/unlink', async (req, reply) => {
     reply.header('cache-control', 'no-store');
     if (!sameOrigin(req)) return reply.code(403).send({ error: 'forbidden' });

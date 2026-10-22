@@ -1,4 +1,4 @@
-// Copy buttons and device-token issuing on the account page. No framework, no dependencies.
+// The personal cabinet: copy buttons, the connection key, every change the owner makes. No framework, no dependencies.
 'use strict';
 
 async function copyText(text) {
@@ -33,7 +33,7 @@ document.addEventListener('click', async (event) => {
   if (text && (await copyText(text))) flashCopied(button);
 });
 
-// «Ключ подключения» on the first step of the setup: the server's address and the device token in
+// «Ключ подключения» in the settings: the server's address and the device token in
 // one value for the side panel of the extension. Shown once; a new key revokes the old one.
 const issueButton = document.getElementById('issue-key');
 if (issueButton) {
@@ -84,19 +84,18 @@ if (issueButton) {
   });
 }
 
-// While the first step waits for the extension, it asks the server every 5 s and says when the
+// While the settings wait for the extension, the page asks the server every 5 s and says when the
 // extension connected — in place: a reload would hide the key not yet pasted.
 const extState = document.querySelector('[data-ext-poll]');
 if (extState) {
   const started = Date.now();
   const tick = async () => {
     try {
-      const res = await fetch('/api/onboarding/extension', { credentials: 'same-origin' });
+      const res = await fetch('/api/extension', { credentials: 'same-origin' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.connected) {
         extState.classList.add('ext-state--on');
-        extState.querySelector('[data-ext-text]').textContent =
-          'Расширение подключено. Можно переходить к площадкам.';
+        extState.querySelector('[data-ext-text]').textContent = 'Расширение подключено.';
         return;
       }
     } catch {
@@ -107,72 +106,10 @@ if (extState) {
   setTimeout(tick, 5000);
 }
 
-// ---------------------------------------------------------------- agents page
-// Every change goes to the site's /api/agents/* (same origin, session cookie), which forwards it
-// to the Goldfish server on the owner's behalf. After a change the page is reloaded from the server
-// on the same tab and at the same place, and says what changed at the bottom of the screen.
-
-// ------------------------------------------------ tabs
-// Every tab is in the page; a link to `?tab=…` (the tabs, the status line, «Первые шаги») shows
-// its tab without a reload. Without this script the same links open the tab from the server.
-
-const panels = [...document.querySelectorAll('[data-panel]')];
-const tabLinks = [...document.querySelectorAll('.tabs [data-tab]')];
-const tabsNav = document.querySelector('.tabs');
-const baseTitle = document.title.replace(/^[^—]+— /, '');
-
-function panelOf(el) {
-  const box = el && el.closest('[data-panel]');
-  return box ? box.getAttribute('data-panel') : null;
-}
-
-function showTab(tab, { anchor = '', push = false } = {}) {
-  const target = panels.find((p) => p.getAttribute('data-panel') === tab);
-  if (!target) return false;
-  for (const p of panels) p.hidden = p !== target;
-  for (const a of tabLinks) {
-    if (a.getAttribute('data-tab') === tab) a.setAttribute('aria-current', 'page');
-    else a.removeAttribute('aria-current');
-  }
-  const link = tabLinks.find((a) => a.getAttribute('data-tab') === tab);
-  if (link) document.title = `${link.firstChild.textContent.trim()} — ${baseTitle}`;
-  const url = `${location.pathname}?tab=${tab}`;
-  if (push) history.pushState({ tab }, '', url);
-  else history.replaceState({ tab }, '', url);
-  const el = anchor && document.getElementById(anchor);
-  if (el) {
-    const fold = el.closest('details');
-    if (fold) fold.open = true;
-    el.scrollIntoView({ block: 'start' });
-  } else if (tabsNav && tabsNav.getBoundingClientRect().top < 0) {
-    tabsNav.scrollIntoView({ block: 'start' });
-  }
-  return true;
-}
-
-if (panels.length) {
-  document.addEventListener('click', (event) => {
-    const a = event.target.closest('a[href]');
-    if (!a || event.defaultPrevented || event.button !== 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    const url = new URL(a.href, location.href);
-    const tab = url.searchParams.get('tab');
-    if (url.origin !== location.origin || url.pathname !== location.pathname || !tab) return;
-    if (showTab(tab, { anchor: decodeURIComponent(url.hash.slice(1)), push: true }))
-      event.preventDefault();
-  });
-  addEventListener('popstate', () => {
-    showTab(new URLSearchParams(location.search).get('tab') || 'today');
-  });
-  // An old link to an anchor (`/agents#profile-title`) opens the tab the anchor is on.
-  const openHash = () => {
-    const id = decodeURIComponent(location.hash.slice(1));
-    const el = id && document.getElementById(id);
-    if (el && panelOf(el)) showTab(panelOf(el), { anchor: id });
-  };
-  addEventListener('hashchange', openHash);
-  if (location.hash) openHash();
-}
+// ---------------------------------------------------------------- the cabinet
+// Every change goes to the site's /api/agents/* (same origin, session cookie), which forwards it to
+// the Goldfish server on the owner's behalf. After a change the page is reloaded from the server at
+// the same place, and says what changed at the bottom of the screen.
 
 // ------------------------------------------------ messages at the bottom of the screen
 
@@ -237,27 +174,17 @@ try {
   // Storage blocked: the message is just not shown after the reload.
 }
 
-function reloadWith(message) {
+function reloadWith(message, y = scrollY) {
   try {
     sessionStorage.setItem(FLASH_KEY, message);
     sessionStorage.setItem(
       SCROLL_KEY,
-      JSON.stringify({ url: location.pathname + location.search, y: scrollY }),
+      JSON.stringify({ url: location.pathname + location.search, y }),
     );
   } catch {
     alert(message);
   }
   location.reload();
-}
-
-/** Another page, with the message shown there at the bottom of the screen. */
-function goWith(url, message) {
-  try {
-    sessionStorage.setItem(FLASH_KEY, message);
-  } catch {
-    // Storage blocked: the page opens without the message.
-  }
-  location.href = url;
 }
 
 /** A change of settings; `done` says what changed, the manager's warnings follow it. */
@@ -441,13 +368,16 @@ const STATUS_HINTS = [
     /^задача на согласовании/,
     'Уровень автономности 2: согласуйте задачу на вкладке «Сегодня» — дальше агент выполнит её сам.',
   ],
-  [/^не запущено: уровень автономности/, 'Сменить уровень: «Команда» → «Режим работы».'],
-  [/расширение ещё ни разу/, 'Установите и подключите расширение — шаг 1 настройки.'],
+  [/^не запущено: уровень автономности/, 'Сменить уровень: «Агенты» → «Режим работы».'],
+  [
+    /расширение ещё ни разу/,
+    'Установите и подключите расширение: «Настройки» → «Расширение для браузера».',
+  ],
   [
     /нет подключённых систем/,
-    'Отметьте нужные площадки в эталоне: «Объект» → «Системы и площадки».',
+    'Подключите нужные площадки: «Объект» → «Объявления на площадках» или «Системы и площадки» в эталоне.',
   ],
-  [/^пауза/, 'Изменения выполнятся, когда закончится пауза («Команда» → «Режим работы»).'],
+  [/^пауза/, 'Изменения выполнятся, когда закончится пауза («Агенты» → «Режим работы»).'],
   [/^задание запущено/, 'Агент работает в вашем браузере — держите его открытым.'],
   [/^ошибка/, 'Попробуйте позже. Если повторяется — напишите нам с текстом ошибки.'],
 ];
@@ -535,7 +465,7 @@ if (ownerForm) {
 // for itself again and puts the new one in place when something changed — a decision taken in
 // Telegram shows here without a reload. Not while the owner is editing a text or deciding.
 
-const todayPanel = document.querySelector('[data-panel="today"]');
+const todayPanel = document.querySelector('[data-today]');
 const TODAY_EVERY_MS = 20_000;
 let todayBusy = false;
 let todayTimer = 0;
@@ -559,8 +489,6 @@ async function refreshToday({ force = false } = {}) {
     if (!force && data.rev && data.rev === todayPanel.getAttribute('data-rev')) return;
     todayPanel.innerHTML = data.today;
     if (data.rev) todayPanel.setAttribute('data-rev', data.rev);
-    const strip = document.querySelector('[data-statuses]');
-    if (strip && data.strip) strip.outerHTML = data.strip;
     const tab = document.querySelector('.tabs [data-tab="today"]');
     if (tab) {
       const old = tab.querySelector('.tabs__count');
@@ -856,7 +784,11 @@ if (profileForm) {
       for (const box of profileForm.querySelectorAll('[data-list]'))
         profile[box.getAttribute('data-list')] = collectList(box);
       profile.rooms = roomIds(profile.rooms || []);
-      profile.systems = [];
+      // The CRM is set in the settings: its systems are not on this form and stay as they are.
+      const shown = new Set(
+        [...profileForm.querySelectorAll('[data-sys]')].map((x) => x.getAttribute('data-sys')),
+      );
+      profile.systems = (profile.systems || []).filter((x) => !shown.has(x.id));
       for (const sys of profileForm.querySelectorAll('[data-sys]')) {
         if (!sys.querySelector('[data-sys-on]').checked) continue;
         const item = JSON.parse(sys.getAttribute('data-item'));
@@ -1006,6 +938,21 @@ if (importText)
     startImport({ text: importText.elements.text.value }, importText);
   });
 
+// «Заполнить эталон» in the row of a listing: the address is known, the agent reads that listing.
+document.querySelectorAll('[data-act="import-from"]').forEach((button) =>
+  button.addEventListener(
+    'click',
+    guarded(async () => {
+      button.disabled = true;
+      const data = await agentsCall('POST', '/api/agents/profile/import', {
+        url: button.getAttribute('data-url'),
+      });
+      if (data.status === 'failed') throw new Error(`Не получилось: ${data.error}`);
+      reloadWith('Агент читает объявление — черновик эталона появится вверху страницы.', 0);
+    }),
+  ),
+);
+
 const importPoll = document.querySelector('[data-import-poll]');
 if (importPoll) {
   const id = importPoll.getAttribute('data-import-poll');
@@ -1128,43 +1075,6 @@ document.querySelectorAll('[data-act="listing-verdict"]').forEach((button) =>
   ),
 );
 
-// «Внести вручную»: the owner's own address of the listing; the platform is registered at once.
-const listingManual = document.querySelector('form[data-form="listing-manual"]');
-if (listingManual)
-  listingManual.addEventListener(
-    'submit',
-    guarded(async (event) => {
-      event.preventDefault();
-      const button = listingManual.querySelector('button[type="submit"]');
-      button.disabled = true;
-      const select = listingManual.elements.platform;
-      const title = select.options[select.selectedIndex]?.text ?? select.value;
-      try {
-        await agentsCall('POST', '/api/agents/listings/manual', {
-          platform: select.value,
-          url: listingManual.elements.url.value.trim(),
-        });
-      } finally {
-        button.disabled = false;
-      }
-      reloadWith(
-        `${title}: объявление подключено в «Системы и площадки» — агент будет читать его по ссылке, без поиска.`,
-      );
-    }),
-  );
-
-// «Внести ссылку» in a row: opens the form with that platform chosen.
-document.querySelectorAll('[data-act="listing-manual-pick"]').forEach((button) =>
-  button.addEventListener('click', () => {
-    const box = document.querySelector('[data-listing-manual]');
-    if (!box || !listingManual) return;
-    box.open = true;
-    listingManual.elements.platform.value = button.getAttribute('data-platform');
-    listingManual.elements.url.focus();
-    box.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }),
-);
-
 document.querySelectorAll('[data-act="listing-publish"]').forEach((button) =>
   button.addEventListener(
     'click',
@@ -1201,6 +1111,28 @@ document.querySelectorAll('[data-act="listings-sync"]').forEach((button) =>
   ),
 );
 
+/**
+ * The list of competitors after the agent's candidate was answered: the server changed it, so the
+ * rows of the list are made again from the server's answer (the page is not reloaded).
+ */
+function syncCompetitors(list) {
+  const box = document.querySelector('[data-list="competitors"]');
+  if (!box) return;
+  const rows = box.querySelector('.list-edit__rows');
+  const template = box.querySelector('template[data-list-template]').content.firstElementChild;
+  rows.replaceChildren();
+  for (const item of list) {
+    const row = template.cloneNode(true);
+    row.setAttribute('data-item', JSON.stringify(item));
+    for (const field of row.querySelectorAll('[data-key]'))
+      field.value = item[field.getAttribute('data-key')] ?? '';
+    rows.appendChild(row);
+  }
+  const count = document.querySelector('[data-competitors-count]');
+  if (count)
+    count.textContent = `В списке ${list.length} из 10. Их цены агент сравнивает с вашими; добавьте своих или уберите лишних.`;
+}
+
 // An answer about a candidate changes only its own row: the owner goes through the list.
 document.querySelectorAll('[data-act="competitor-verdict"]').forEach((button) =>
   button.addEventListener(
@@ -1217,9 +1149,7 @@ document.querySelectorAll('[data-act="competitor-verdict"]').forEach((button) =>
         b.disabled = false;
         b.setAttribute('aria-pressed', String(b === button));
       });
-      const count = document.querySelector('[data-competitors-count]');
-      if (count && data.competitors)
-        count.textContent = `В «Конкурентах» сейчас: ${data.competitors.length}.`;
+      if (data.competitors) syncCompetitors(data.competitors);
       if (data.note) showStatus(data.note);
     }),
   ),
@@ -1317,9 +1247,9 @@ if (acceptForm)
   });
 
 // ---------------------------------------------------------------- «Изучение»
-// After the setup the agents only read the cabinets. While a study runs the agents page asks for
-// it every 15 s and reloads when a cabinet is done; the owner ends it (the agents then work by
-// their rights) or studies the cabinets again.
+// After the launch the agents only read the cabinets. While a study runs, «Сегодня» asks for it
+// every 15 s and reloads when a cabinet is done; the owner ends it (the agents then work by their
+// rights) or studies the cabinets again.
 
 const studyPoll = document.querySelector('[data-study-poll]');
 if (studyPoll) {
@@ -1362,9 +1292,9 @@ document.querySelectorAll('[data-act="study-start"]').forEach((button) =>
   ),
 );
 
-// ---------------------------------------------------------------- setup wizard
-// Every step saves through /api/onboarding/* (same origin, session cookie); the site forwards it to
-// the Goldfish server on the owner's behalf and says what did not go through.
+// ---------------------------------------------------------------- setting up
+// «Первые шаги» and «Настройки» save through /api/agents/* (same origin, session cookie); the site
+// forwards it to the Goldfish server on the owner's behalf and says what did not go through.
 
 /** The form's own error line, under its fields. */
 function formError(form, message) {
@@ -1391,8 +1321,9 @@ function setupForm(name, submit) {
   });
 }
 
-// Step 2: a field per platform; the radio marks the reference listing the agent reads.
-setupForm('setup-listings', async (form) => {
+// «Объявления на площадках»: a field per platform. A pasted address registers the platform, a
+// cleared field takes the listing out of the reference; the server says what it did not accept.
+setupForm('listings-save', async (form) => {
   const listings = [...form.querySelectorAll('input[name="listing"]')].map((input) => ({
     platform: input.getAttribute('data-platform'),
     url: input.value.trim(),
@@ -1402,29 +1333,19 @@ setupForm('setup-listings', async (form) => {
       form.querySelector(`input[data-platform="${l.platform}"]`).focus();
       throw new Error('Вставьте ссылку на объявление целиком, с https://');
     }
-  const filled = listings.filter((l) => l.url);
-  const checked = form.querySelector('input[name="reference"]:checked');
-  let reference = checked ? checked.value : null;
-  if (reference && !filled.some((l) => l.platform === reference)) reference = null;
-  // One guest listing and no choice: it is the reference.
-  const guest = [...form.querySelectorAll('input[name="reference"]')].map((r) => r.value);
-  if (!reference) {
-    const only = filled.filter((l) => guest.includes(l.platform));
-    if (only.length === 1) reference = only[0].platform;
-  }
-  if (filled.length && !reference)
-    throw new Error('Отметьте эталонное объявление — кружком слева от площадки');
-  const data = await agentsCall('POST', '/api/onboarding/listings', { listings, reference });
-  goWith(
-    '/start?step=3',
-    data.importStarted
-      ? 'Объявления сохранены. Агент читает эталонное объявление — черновик эталона появится на шаге 2.'
-      : 'Объявления сохранены.',
-  );
+  await agentsCall('POST', '/api/agents/listings/links', { listings });
+  reloadWith('Ссылки на объявления сохранены.');
 });
 
-// Step 3: the CRM; the address field follows the CRM chosen, «Нет CRM» needs none.
-const crmForm = document.querySelector('form[data-form="setup-crm"]');
+// «Конкуренты»: the list is saved on its own; the server changes only it.
+setupForm('competitors-save', async (form) => {
+  const competitors = collectList(form.querySelector('[data-list="competitors"]'));
+  await agentsCall('POST', '/api/agents/competitors/list', { competitors });
+  reloadWith('Список конкурентов сохранён.');
+});
+
+// «Кабинет вашей CRM»: the address field follows the CRM chosen, «Нет CRM» needs none.
+const crmForm = document.querySelector('form[data-form="crm"]');
 if (crmForm) {
   const select = crmForm.elements.system;
   const url = crmForm.elements.url;
@@ -1437,24 +1358,25 @@ if (crmForm) {
   select.addEventListener('change', follow);
   follow();
 }
-setupForm('setup-crm', async (form) => {
+setupForm('crm', async (form) => {
   const system = form.elements.system.value;
   if (!system) throw new Error('Выберите вашу CRM');
-  await agentsCall('POST', '/api/onboarding/crm', { system, url: form.elements.url.value.trim() });
+  await agentsCall('POST', '/api/agents/crm', { system, url: form.elements.url.value.trim() });
   reloadWith(system === 'none' ? 'Сохранено: CRM нет.' : 'Кабинет CRM сохранён.');
 });
 
-// Step 4: the team, the autonomy after the study, and the launch of the study.
-setupForm('setup-team', async (form) => {
-  const agents = [...form.querySelectorAll('input[name="agent"]:checked')].map((x) => x.value);
-  if (!agents.length) throw new Error('Отметьте хотя бы одного агента');
-  const level = form.querySelector('input[name="autonomy"]:checked');
-  const data = await agentsCall('POST', '/api/onboarding/finish', {
-    agents,
-    ...(level ? { autonomy: Number(level.value) } : {}),
-  });
-  goWith(
-    data.redirect || '/agents',
-    'Готово: агенты изучают ваши кабинеты и ничего не меняют. Как идёт изучение — вверху страницы.',
-  );
-});
+// «Запустить изучение», the last of the first steps: the agents go through the cabinets and change
+// nothing until the owner allows the work.
+document.querySelectorAll('[data-act="launch"]').forEach((button) =>
+  button.addEventListener(
+    'click',
+    guarded(async () => {
+      button.disabled = true;
+      await agentsCall('POST', '/api/agents/launch');
+      reloadWith(
+        'Готово: агенты изучают ваши кабинеты и ничего не меняют. Как идёт изучение — вверху страницы.',
+        0,
+      );
+    }),
+  ),
+);

@@ -1,17 +1,7 @@
 import type { UserRecord } from '../store/types.js';
-import { botsBlock, type BotsState } from './bots.js';
-import {
-  AGENT_TABS,
-  ICONS,
-  agentsHref,
-  esc,
-  header,
-  helpLink,
-  layout,
-  type AgentAnchor,
-  type AgentTab,
-  type View,
-} from './page.js';
+import type { BotsState } from './bots.js';
+import { cabinetPage, type CabinetState } from './cabinet.js';
+import { ICONS, TAB_PATH, cabinetHref, day, esc, helpLink, type CabinetAnchor } from './page.js';
 
 /** What the Goldfish server returns about the owner's property (GET …/hotel). */
 export interface HotelView {
@@ -163,22 +153,28 @@ export interface DeskView {
   kpi: Array<{ id: string; label: string; value: string; sub: string }> | null;
 }
 
-export interface AgentsState extends View {
-  user: UserRecord;
-  hotel: HotelView | null;
-  desk: DeskView;
+/** The owner's extension on the Goldfish server; null — not known (no token issued yet). */
+export interface ExtensionState {
+  online: boolean;
+  lastSeenAt: string | null;
+}
 
-  /** The tab the page opens on (`?tab=`); «Сегодня» by default. */
-  tab?: AgentTab;
-  /** The latest draft of the reference from a card, while it is read or waits for the owner. */
-  profileImport?: ProfileImportView | null;
-  listings?: ListingSearchView | null;
-  competitorSearch?: CompetitorSearchView | null;
+/** «Сегодня»: what waits for the owner, how the setup and the study go. */
+export interface TodayState extends CabinetState {
+  desk: DeskView;
+  /** «Изучение» with how it goes by system; null — an older Goldfish without it. */
+  study: StudyView | null;
+  extension: ExtensionState | null;
   /** The bots in the messengers: undefined when the site has no bots server (BOTS_URL). */
   bots?: BotsState | undefined;
-  /** «Изучение» with how it goes by system; null — an older Goldfish without it. */
-  study?: StudyView | null;
-  error: string | null;
+}
+
+/** «Объект»: the reference, the listings and the competitors. */
+export interface PropertyState extends CabinetState {
+  /** The latest draft of the reference from a card, while it is read or waits for the owner. */
+  profileImport: ProfileImportView | null;
+  listings: ListingSearchView | null;
+  competitorSearch: CompetitorSearchView | null;
 }
 
 /** «Изучение» (GET …/hotel/study): the agents go through the cabinets and change nothing. */
@@ -335,13 +331,6 @@ const AGENT_ICONS: Record<string, keyof typeof ICONS> = {
   direct: 'direct',
   manager: 'manager',
 };
-const TAB_TITLES: Record<AgentTab, string> = {
-  today: 'Сегодня',
-  team: 'Команда',
-  property: 'Объект',
-  settings: 'Настройки',
-};
-
 const attr = (v: unknown) => esc(JSON.stringify(v));
 const pct = (n: number | null | undefined) =>
   n === null || n === undefined ? '—' : `${n.toLocaleString('ru-RU')}%`;
@@ -355,10 +344,6 @@ const when = (iso: string) =>
     hour: '2-digit',
     minute: '2-digit',
   });
-const day = (ymd: string) => {
-  const [y, m, d] = ymd.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : ymd;
-};
 export const icon = (agent: string) => ICONS[AGENT_ICONS[agent] ?? 'manager'];
 const dot = (l: Level) => `<span class="lvl lvl--${l}" aria-hidden="true"></span>`;
 /** «1 обязанность», «3 обязанности», «9 обязанностей». */
@@ -376,87 +361,11 @@ const duties = (n: number) => {
   return `${n} ${word}`;
 };
 
-// ---------------------------------------------------------------- the top of the page
+// ---------------------------------------------------------------- shared
 
 /** Whether a chat gets the manager's messages: a bot of the bots server or the Telegram of Goldfish. */
 export function messengerLinked(h: HotelView, bots: BotsState | undefined): boolean {
   return h.telegramLinked || (!!bots && bots !== 'unavailable' && bots.links.length > 0);
-}
-
-/**
- * What the owner sees first on every tab: who works, the wave, a pause, what waits for them and
- * where the manager writes — each a link to the place where it is changed. The same line is in
- * the side panel of the extension and in the bots' menu.
- */
-export function statusStrip(s: Pick<AgentsState, 'hotel' | 'desk' | 'bots'>): string {
-  const h = s.hotel!;
-  const bots = s.bots;
-  const set = h.settings;
-  const { status } = s.desk;
-  const on = set.agents.filter((a) => a.enabled).length;
-  const items: string[] = [];
-  if (set.study)
-    items.push(
-      `<a class="status status--study" href="#study-title"><span class="status__dot" aria-hidden="true"></span>Изучение: агенты только читают</a>`,
-    );
-  items.push(
-    on
-      ? `<a class="status status--ok" href="${agentsHref('team-title')}"><span class="status__dot" aria-hidden="true"></span>Работают ${on} из ${set.agents.length} агентов</a>`
-      : `<a class="status status--off" href="${agentsHref('team-title')}"><span class="status__dot" aria-hidden="true"></span>Агенты выключены</a>`,
-  );
-  if (set.pause)
-    items.push(
-      `<a class="status status--warn" href="${agentsHref('launch-title')}">Пауза до ${esc(day(set.pause.until))}${set.pause.reason ? ` · ${esc(set.pause.reason)}` : ''}</a>`,
-    );
-  const level = autonomyOf(h);
-  if (level)
-    items.push(
-      `<a class="status" href="${agentsHref('autonomy-title')}">Уровень ${level.level} из 4 · ${esc(level.title.toLowerCase())}</a>`,
-    );
-  items.push(
-    `<a class="status" href="${agentsHref('launch-title')}">Волна ${set.wave} из 3 · ${esc(WAVES[set.wave - 1]?.name.toLowerCase() ?? '')}</a>`,
-  );
-  items.push(
-    status.pending
-      ? `<a class="status ${status.urgent ? 'status--bad' : 'status--accent'}" href="${agentsHref('approvals-title')}">Ждут решения: ${status.pending}</a>`
-      : `<a class="status" href="${agentsHref('approvals-title')}">Решений не ждут</a>`,
-  );
-  if (bots && bots !== 'unavailable') {
-    const linked = [...new Set(bots.links.map((l) => l.title))];
-    items.push(
-      linked.length
-        ? `<a class="status" href="${agentsHref('telegram-title')}">Привязан ${esc(linked.join(', '))}</a>`
-        : `<a class="status status--warn" href="${agentsHref('telegram-title')}">Мессенджер не привязан</a>`,
-    );
-  } else if (h.telegramBot !== false)
-    items.push(
-      h.telegramLinked
-        ? `<a class="status" href="${agentsHref('telegram-title')}">Telegram привязан</a>`
-        : `<a class="status status--warn" href="${agentsHref('telegram-title')}">Telegram не привязан</a>`,
-    );
-  return `<ul class="statuses" aria-label="Состояние" data-statuses>${items.map((x) => `<li>${x}</li>`).join('')}</ul>`;
-}
-
-/** The count of decisions waiting, on the «Сегодня» tab; red when one of them is urgent. */
-export function tabCount(status: DeskView['status']): string {
-  return status.pending
-    ? ` <span class="tabs__count${status.urgent ? ' tabs__count--urgent' : ''}" aria-label="ждут решения: ${status.pending}">${status.pending}</span>`
-    : '';
-}
-
-function tabsNav(active: AgentTab, status: DeskView['status']): string {
-  return `<nav class="tabs" aria-label="Разделы агентов">
-${AGENT_TABS.map(
-  (t) =>
-    `  <a class="tabs__tab" href="?tab=${t}" data-tab="${t}"${t === active ? ' aria-current="page"' : ''}>${TAB_TITLES[t]}${t === 'today' ? tabCount(status) : ''}</a>`,
-).join('\n')}
-</nav>`;
-}
-
-function panel(tab: AgentTab, active: AgentTab, body: string, rev?: string): string {
-  return `<div class="tab-panel" id="tab-${tab}" data-panel="${tab}"${rev ? ` data-rev="${esc(rev)}"` : ''} role="region" aria-label="${TAB_TITLES[tab]}"${tab === active ? '' : ' hidden'}>
-${body}
-</div>`;
 }
 
 // ---------------------------------------------------------------- «Сегодня»
@@ -548,7 +457,7 @@ export function deskFromParts(
 
 function kpiTiles(tiles: DeskView['kpi']): string {
   const body = !tiles
-    ? `<p class="notice">Добавьте в эталон номера и их количество — тогда управляющий посчитает загрузку, ADR и RevPAR. <a href="${agentsHref('profile-title')}">Открыть эталон</a></p>`
+    ? `<p class="notice">Добавьте в эталон номера и их количество — тогда управляющий посчитает загрузку, ADR и RevPAR. <a href="${cabinetHref('profile-title')}">Открыть эталон</a></p>`
     : `<div class="tiles">${tiles
         .map(
           (t) =>
@@ -561,58 +470,134 @@ function kpiTiles(tiles: DeskView['kpi']): string {
   </section>`;
 }
 
+/** A system as the reference keeps it: the address of the owner's cabinet and of the listing. */
+type System = { id: string; url?: string; listingUrl?: string };
+
+/** Where listings are entered: platforms for guests and the maps. */
+export const LISTING_CATEGORIES = new Set(['guest', 'maps']);
+/** The owner's CRM: a PMS or a chessboard table. */
+export const CRM_CATEGORIES = new Set(['pms', 'sheet']);
+
+/** What the owner gave so far; the setup list, the listings and the CRM form read it. */
+export function setupFacts(
+  h: HotelView,
+  s: { user: UserRecord; bots?: BotsState | undefined; extension?: ExtensionState | null },
+) {
+  const systems = ((h.profile.systems ?? []) as System[]).filter((x) => x && x.id);
+  const category = new Map(h.settings.platforms.map((p) => [p.id, p.category]));
+  const title = new Map(h.settings.platforms.map((p) => [p.id, p.title]));
+  return {
+    systems,
+    category,
+    title: (id: string) => title.get(id) ?? id,
+    listings: systems.filter((x) => !!x.listingUrl),
+    crm: systems.find((x) => CRM_CATEGORIES.has(category.get(x.id) ?? '') && !!x.url) ?? null,
+    extension: !!s.extension?.lastSeenAt,
+    messenger: messengerLinked(h, s.bots),
+    /** The agents were launched (the study began): the setup is over. */
+    launched: !!s.user.onboardedAt,
+  };
+}
+
+/** The level a new owner starts with: «Контролируемая автономность» over the server's default 4. */
+export const START_AUTONOMY = 3;
+
 /**
- * «Первые шаги»: what is left before the agents can work, each with a link to the place to do
- * it and to the guide. Hidden once everything is done.
+ * «Первые шаги»: the one list of what is left before the agents work — the extension, the
+ * reference, the CRM, a messenger, the launch. Each step leads to the place where it is done; the
+ * first one left is the main button. The launch is the last: it starts the study, in which the
+ * agents only read. Hidden once everything is done.
  */
-function firstSteps(s: Pick<AgentsState, 'hotel' | 'bots'>): string {
-  const h = s.hotel!;
-  const bots = s.bots;
+function firstSteps(s: TodayState, h: HotelView): string {
+  const f = setupFacts(h, s);
   const rooms = (h.profile.rooms as unknown[] | undefined) ?? [];
-  const steps: Array<{ done: boolean; title: string; anchor: AgentAnchor; help: string }> = [
+  const messengers = !!s.bots;
+  const levels = h.settings.autonomyLevels;
+  const toStart =
+    h.settings.autonomy === 4 && levels?.some((l) => l.level === START_AUTONOMY)
+      ? ` Для начала поставим уровень автономности ${START_AUTONOMY} — потом его можно поменять на вкладке «Агенты».`
+      : '';
+  // Something to study: a listing or the cabinet of the CRM.
+  const nothing = !f.listings.length && !f.crm;
+  const blocked = !f.extension
+    ? 'Сначала подключите расширение.'
+    : nothing
+      ? 'Изучать пока нечего: внесите ссылку на объявление или кабинет CRM.'
+      : '';
+  const steps: Array<{
+    done: boolean;
+    /** Not asked: it makes no sense for this owner or this server. */
+    skip?: boolean;
+    title: string;
+    doneTitle: string;
+    hint: string;
+    action: string;
+    href?: CabinetAnchor;
+  }> = [
+    {
+      done: f.extension || f.launched,
+      title: 'Установите расширение Goldfish',
+      doneTitle: 'Расширение подключено',
+      hint: 'Через него агенты открывают ваши кабинеты в вашем браузере, где вы уже вошли.',
+      action: 'Установить',
+      href: 'extension-title',
+    },
     {
       done: !!h.profile.name && rooms.length > 0,
-      title: 'Заполните эталон: название и номера — можно по ссылке на карточку',
-      anchor: 'profile-title',
-      help: 'profile-card',
+      title: 'Заполните эталон объекта',
+      doneTitle: 'Эталон заполнен',
+      hint: 'Название, номера и правила — проще всего по ссылке на ваше объявление: агент прочитает его сам.',
+      action: 'Заполнить',
+      href: 'profile-title',
     },
     {
-      done: (h.profile.systems ?? []).length > 0,
-      title: 'Отметьте в эталоне PMS и площадки, где вы работаете',
-      anchor: 'profile-title',
-      help: 'systems',
+      // Without a CRM the owner launches anyway: it is not asked after that.
+      done: !!f.crm,
+      skip: f.launched && !f.crm,
+      title: 'Дайте ссылку на кабинет вашей CRM',
+      doneTitle: f.crm ? `Кабинет CRM: ${f.title(f.crm.id)}` : 'Кабинет CRM',
+      hint: 'Агенты будут сверять в ней брони, цены и наличие с площадками. Логин и пароль не нужны.',
+      action: 'Указать',
+      href: 'crm-title',
     },
     {
-      done: h.settings.agents.some((a) => a.enabled),
-      title: 'Включите агентов — начните с «Каналов продаж»',
-      anchor: 'team-title',
-      help: 'agent-on',
+      done: f.messenger,
+      // Nothing to link: no bots server and no Telegram bot of Goldfish.
+      skip: !messengers && h.telegramBot === false,
+      title: messengers ? 'Привяжите мессенджер' : 'Привяжите Telegram',
+      doneTitle: messengers ? 'Мессенджер привязан' : 'Telegram привязан',
+      hint: messengers
+        ? 'Сводки, срочное и согласования придут в Telegram, MAX или WhatsApp — оттуда же можно поручать агентам задачи.'
+        : 'Сводки, срочное и согласования придут в Telegram.',
+      action: 'Привязать',
+      href: 'telegram-title',
     },
-    bots
-      ? {
-          done: messengerLinked(h, bots),
-          title: 'Привяжите Telegram, MAX или WhatsApp для сводки, согласований и задач',
-          anchor: 'telegram-title',
-          help: 'bots',
-        }
-      : {
-          done: h.telegramLinked,
-          title: 'Привяжите Telegram для сводки и согласований',
-          anchor: 'telegram-title',
-          help: 'tg-link',
-        },
+    {
+      done: f.launched,
+      title: 'Запустите агентов',
+      doneTitle: 'Агенты запущены',
+      hint: `Сначала они только изучают ваши кабинеты и ничего не меняют — работу разрешаете вы.${toStart}`,
+      action: 'Запустить изучение',
+    },
   ];
-  const left = steps.filter((x) => !x.done).length;
+  const asked = steps.filter((x) => !x.skip);
+  const left = asked.filter((x) => !x.done).length;
   if (!left) return '';
+  const next = asked.find((x) => !x.done);
   return `<section class="card steps-card" aria-labelledby="first-title">
-    <div class="card__head"><h2 id="first-title">Первые шаги · осталось ${left} из ${steps.length}</h2>${helpLink('topic-start', 'Вся инструкция')}</div>
-    <div class="progress" aria-hidden="true">${steps.map((x) => `<span class="progress__seg${x.done ? ' progress__seg--done' : ''}"></span>`).join('')}</div>
+    <div class="card__head"><h2 id="first-title">Первые шаги · осталось ${left} из ${asked.length}</h2></div>
+    <div class="progress" aria-hidden="true">${asked.map((x) => `<span class="progress__seg${x.done ? ' progress__seg--done' : ''}"></span>`).join('')}</div>
     <ol class="checklist">
-${steps
-  .map(
-    (x) =>
-      `      <li class="${x.done ? 'checklist__done' : ''}"><span class="checklist__mark" aria-hidden="true">${x.done ? '✓' : ''}</span><span>${x.done ? `${esc(x.title)}<span class="visually-hidden"> — готово</span>` : `<a href="${agentsHref(x.anchor)}">${esc(x.title)}</a> ${helpLink(x.help, 'как?')}`}</span></li>`,
-  )
+${asked
+  .map((x, i) => {
+    if (x.done)
+      return `      <li class="checklist__done"><span class="checklist__mark" aria-hidden="true">✓</span><span class="checklist__body">${esc(x.doneTitle)}<span class="visually-hidden"> — готово</span></span></li>`;
+    const main = x === next;
+    const act = x.href
+      ? `<a class="btn ${main ? 'btn--accent' : 'btn--ghost'} btn--sm" href="${cabinetHref(x.href)}">${x.action}</a>`
+      : `<button class="btn ${main && !blocked ? 'btn--accent' : 'btn--ghost'} btn--sm" type="button" data-act="launch"${blocked ? ' disabled' : ''}>${x.action}</button>`;
+    return `      <li class="checklist__todo${main ? ' checklist__next' : ''}"><span class="checklist__mark" aria-hidden="true">${asked.indexOf(x) + 1}</span><span class="checklist__body"><b>${esc(x.title)}</b><span class="hint">${esc(x.hint)}${!x.href && blocked ? ` <span class="warn">${esc(blocked)}</span>` : ''}</span></span><span class="checklist__act">${act}</span></li>`;
+  })
   .join('\n')}
     </ol>
   </section>`;
@@ -691,22 +676,29 @@ function feedBlock(feed: DeskView['feed']): string {
     .join('')}</ul>`;
 }
 
+/** Whether the desk has anything to say: before the agents are launched it would be all empty. */
+export function deskShown(user: UserRecord, h: HotelView, desk: DeskView): boolean {
+  return (
+    !!user.onboardedAt || h.settings.agents.some((a) => a.enabled) || desk.approvals.length > 0
+  );
+}
+
 /**
- * The «Сегодня» tab: what is left to set up, what waits for the owner, what was decided, the
- * numbers and the manager's messages. app.js asks for it again (GET /api/agents/today) and puts
- * it in place when the desk changed — a decision in a messenger or the extension shows here.
+ * The live part of «Сегодня»: what waits for the owner, what was decided, the numbers and the
+ * manager's messages. app.js asks for it again (GET /api/agents/today) and puts it in place when
+ * the desk changed — a decision in a messenger or the extension shows here.
  */
-export function todayPanel(s: Pick<AgentsState, 'hotel' | 'desk' | 'bots'>): string {
+export function todayPanel(s: { user: UserRecord; hotel: HotelView; desk: DeskView }): string {
   const d = s.desk;
-  return `  ${firstSteps(s)}
-  <section class="card" aria-labelledby="approvals-title">
-    <div class="card__head"><h2 id="approvals-title">Ждут решения${d.approvals.length ? ` · ${d.approvals.length}` : ''}</h2>${helpLink('decide', 'Как решать?')}</div>
+  if (!deskShown(s.user, s.hotel, d)) return '';
+  return `  <section class="card" aria-labelledby="approvals-title">
+    <div class="card__head"><h2 id="approvals-title">Ждут решения${d.approvals.length ? ` · ${d.approvals.length}` : ''}</h2></div>
     ${approvalsBlock(d.approvals)}
     ${decidedBlock(d.decided)}
   </section>
   ${kpiTiles(d.kpi)}
   <section class="card" aria-labelledby="feed-title">
-    <div class="card__head"><h2 id="feed-title">Сообщения управляющего</h2>${helpLink('tg-commands', 'Что можно спросить?')}</div>
+    <div class="card__head"><h2 id="feed-title">Сообщения управляющего</h2></div>
     ${feedBlock(d.feed)}
   </section>`;
 }
@@ -752,13 +744,18 @@ function studyCard(h: HotelView, st: StudyView | null | undefined): string {
           return `<li class="study__item study__item--${item?.status ?? 'new'}"><span class="study__mark" aria-hidden="true">${state.mark}</span><span><b>${esc(title)}</b><span class="hint">${esc(state.text + why)}</span></span></li>`;
         })
         .join('')}</ul>`
-    : `<p class="hint">Изучать пока нечего: внесите ссылки на объявления и кабинет CRM на <a href="/start?step=2">шагах настройки</a>.</p>`;
+    : `<p class="hint">Изучать пока нечего: внесите ссылку на <a href="${cabinetHref('listings-title')}">объявление</a> или кабинет <a href="${cabinetHref('crm-title')}">CRM</a>.</p>`;
   const level = autonomyOf(h);
+  const working = h.settings.agents.filter((a) => a.enabled).map((a) => a.title);
   const confirm = [
     'Закончить изучение и разрешить агентам работать?',
+    working.length
+      ? `Будут работать: ${working.join(', ')}.`
+      : 'Сейчас не включён ни один агент — работать будет некому.',
     level
       ? `Дальше — по правам обязанностей и уровню автономности ${level.level} «${level.title}»:\n${level.rules.map((r) => `• ${r}`).join('\n')}`
       : 'Дальше агенты работают по правам своих обязанностей.',
+    'Агентов и уровень можно поменять на вкладке «Агенты».',
   ].join('\n\n');
   return `<section class="card study" aria-labelledby="study-title"${busy ? ` data-study-poll="${esc(studyPollState(st))}"` : ''}>
     <div class="card__head"><h2 id="study-title">Агенты изучают ваши кабинеты</h2>${helpLink('study', 'Что это?')}</div>
@@ -862,7 +859,7 @@ function launchBlock(h: HotelView): string {
         <label class="field field--grow"><span class="field__label">Причина</span><input name="reason" value="${esc(set.pause?.reason ?? '')}" placeholder="ремонт, сезон закрыт"></label>
         <div class="field"><button class="btn btn--ghost btn--sm" type="submit">${set.pause ? 'Сохранить' : 'Поставить паузу'}</button></div>
       </form>
-      <p class="hint">На паузе агенты ничего не меняют на площадках и не пишут гостям; чтение и сводка продолжаются. ${helpLink('pause', 'Подробнее')}</p>
+      <p class="hint">На паузе агенты ничего не меняют на площадках и не пишут гостям; чтение и сводка продолжаются.</p>
     </details>
   </section>`;
 }
@@ -960,34 +957,13 @@ ${a.duties.map((d) => dutyRow(a, d, wave)).join('\n')}
 function teamBlock(h: HotelView): string {
   const set = h.settings;
   return `<section aria-labelledby="team-title">
-    <div class="card__head"><h2 id="team-title" class="section-title">Команда</h2><span class="row row--tight"><button class="link" type="button" data-fold-all="agent:">Развернуть всё</button>${helpLink('levels', 'Что значат права?')}</span></div>
-    <p class="hint hint--top">Включите агента переключателем, затем раскройте его обязанности и выберите права каждой. «Выполнить» — дать задание сейчас; если обязанность выключена, агент спросит разрешение. ${helpLink('permission', 'Подробнее')}</p>
+    <div class="card__head"><h2 id="team-title" class="section-title">Агенты</h2><span class="row row--tight"><button class="link" type="button" data-fold-all="agent:">Развернуть всё</button>${helpLink('levels', 'Что значат права?')}</span></div>
+    <p class="hint hint--top">Включите агента переключателем, затем раскройте его обязанности и выберите права каждой. «Выполнить» — дать задание сейчас; если обязанность выключена, агент спросит разрешение.</p>
     ${legend()}
     <div class="agents__list">
 ${set.agents.map((a) => agentCard(a, set.wave)).join('\n')}
     </div>
   </section>`;
-}
-
-/** The agent asks the owner before running a duty that is off; without an answer nothing runs. */
-export function permissionDialog(): string {
-  return `<dialog class="permission" data-permission aria-labelledby="permission-title">
-  <h2 id="permission-title">Нужно ваше разрешение</h2>
-  <p class="permission__text" data-permission-text></p>
-  <div class="row">
-    <button class="btn btn--accent btn--sm" type="button" data-grant="once">Разрешить один раз</button>
-    <button class="btn btn--ghost btn--sm" type="button" data-grant="always">Разрешить всегда</button>
-    <button class="btn btn--ghost btn--sm" type="button" data-grant="no">Не выполнять</button>
-  </div>
-</dialog>
-<dialog class="permission" data-confirm-dialog aria-labelledby="confirm-title">
-  <h2 id="confirm-title">Подтвердите</h2>
-  <p class="permission__text" data-confirm-text></p>
-  <div class="row">
-    <button class="btn btn--accent btn--sm" type="button" data-answer="yes">Да</button>
-    <button class="btn btn--ghost btn--sm" type="button" data-answer="no">Отмена</button>
-  </div>
-</dialog>`;
 }
 
 // ---------------------------------------------------------------- «Объект»
@@ -1002,106 +978,115 @@ function pollState(platforms: Array<{ status: string; found?: number }>): string
   return JSON.stringify(platforms.map((x) => [x.status, x.found ?? null]));
 }
 
-/** A guest platform the owner can enter a listing's address for. */
-export interface GuestPlatform {
-  id: string;
-  title: string;
+/** How the address of a listing looks on each platform, for the empty fields. */
+const LISTING_PLACEHOLDERS: Record<string, string> = {
+  ostrovok: 'https://ostrovok.ru/hotel/…',
+  yandex_travel: 'https://travel.yandex.ru/hotels/…',
+  avito: 'https://www.avito.ru/…',
+  '101hotels': 'https://101hotels.com/main/cities/…',
+  onetwotrip: 'https://www.onetwotrip.com/ru/hotels/…',
+  ozon_travel: 'https://www.ozon.ru/travel/hotels/…',
+  roomlink: 'https://roomlink.ru/…',
+  yandex_maps: 'https://yandex.ru/maps/org/…',
+  '2gis': 'https://2gis.ru/…/firm/…',
+};
+
+type ListingRow = ListingSearchView['platforms'][number];
+
+/** What the table says next to a platform: the search's finding, or that the listing is connected. */
+function listingState(
+  x: ListingRow | undefined,
+  url: string,
+  l: ListingSearchView | null | undefined,
+  fill: boolean,
+): string {
+  const open = safeUrl(url)
+    ? `<a href="${esc(url)}" target="_blank" rel="noopener">открыть</a>`
+    : '';
+  const connected = (note: string) =>
+    `<span class="ok-text">✓ подключена</span>${open ? ` ${open}` : ''}${note ? `<span class="hint">${esc(note)}</span>` : ''}${
+      fill && url
+        ? `<button class="btn btn--ghost btn--sm" type="button" data-act="import-from" data-url="${esc(url)}">Заполнить эталон</button>`
+        : ''
+    }`;
+  if (x?.status === 'searching')
+    return `<span class="muted">${x.byLink || x.recheck ? 'читает по ссылке…' : 'ищет…'}</span>`;
+  if (x?.status === 'found') {
+    const where = [x.address, x.rating && x.verdict === 'mine' ? `рейтинг ${x.rating}` : null]
+      .filter(Boolean)
+      .join(' · ');
+    if (x.verdict === 'mine')
+      return connected(
+        [x.listingTitle, where, x.manual ? 'внесено вручную' : '', x.error]
+          .filter(Boolean)
+          .join(' · '),
+      );
+    if (x.verdict === 'not_mine') return '<span class="muted">найденное — не ваше</span>';
+    const found = safeUrl(x.url);
+    return `<span><span class="hint">Нашёл${x.matchTitle ? ` — ${esc(x.matchTitle)}` : ''}: ${found ? `<a href="${esc(found)}" target="_blank" rel="noopener">${esc(x.listingTitle ?? found)}</a>` : esc(x.listingTitle ?? '')}${where ? `, ${esc(where)}` : ''}${x.why ? `. ${esc(x.why)}` : ''}</span></span><span class="row row--tight"><button class="btn btn--accent btn--sm" type="button" data-act="listing-verdict" data-id="${esc(l!.id)}" data-platform="${esc(x.platform)}" data-mine="1">Моё</button><button class="btn btn--ghost btn--sm" type="button" data-act="listing-verdict" data-id="${esc(l!.id)}" data-platform="${esc(x.platform)}" data-mine="0">Не моё</button></span>`;
+  }
+  if (x?.status === 'failed')
+    return `<span class="muted">не прочитано: ${esc(x.error ?? '')}</span>${open ? ` ${open}` : ''}`;
+  if (url) return connected('');
+  if (x?.status === 'not_found')
+    return x.publishProposed
+      ? '<span class="muted">объявления нет · размещение на согласовании</span>'
+      : `<span class="muted">объявления нет</span><button class="btn btn--ghost btn--sm" type="button" data-act="listing-publish" data-id="${esc(l!.id)}" data-platform="${esc(x.platform)}" data-title="${esc(x.title)}">Разместить</button>`;
+  return '';
 }
 
 /**
- * «Внести вручную»: the owner pastes the address of their listing on a platform — it is registered
- * in «Системы и площадки» at once, without a search, and the agent then reads it by the address.
- */
-function manualListingForm(platforms: GuestPlatform[]): string {
-  if (!platforms.length) return '';
-  return `<details class="listing-manual" data-listing-manual>
-  <summary>Внести объявление вручную</summary>
-  <p class="hint">Знаете, где ваше объявление? Вставьте ссылку — площадка сразу подключится в «Системы и площадки», а агент будет читать объявление по ссылке, без поиска.</p>
-  <form class="field__row" data-form="listing-manual">
-    <select name="platform" required aria-label="Площадка">${platforms
-      .map((p) => `<option value="${esc(p.id)}">${esc(p.title)}</option>`)
-      .join('')}</select>
-    <input name="url" type="url" required placeholder="https://…" aria-label="Ссылка на ваше объявление">
-    <button class="btn btn--accent btn--sm" type="submit">Добавить</button>
-  </form>
-</details>`;
-}
-
-/**
- * «Объявления на площадках»: where the property is listed. The owner marks their listings or
- * enters an address by hand (the platform is registered in «Системы и площадки»), then checks the
- * cards against the reference and asks to put the listing where there is none (each by approval).
- * A listing whose address is known is read by it: the agent searches only where none is known.
+ * «Объявления на площадках»: where the property is listed, in one place. Each platform for guests
+ * and each map has a field for the address of the owner's listing — a pasted address registers the
+ * platform, a cleared one takes the listing out of the reference. The agent can search where no
+ * address is known (the owner marks which found listing is theirs), check the cards against the
+ * reference («Сверить») and put a listing where there is none («Разместить», each by approval).
+ * A listing whose address is known is read by it: only the rest is searched.
  */
 function listingsBlock(
   l: ListingSearchView | null | undefined,
-  platforms: GuestPlatform[],
+  h: HotelView,
+  referenceEmpty: boolean,
 ): string {
-  if (!l)
-    return `<p class="hint">Агент поищет ваше объявление на всех площадках для гостей по названию и адресу из эталона. Вы отметите свои — они подключатся в «Системы и площадки». Знаете ссылку — внесите её сами, искать не придётся.</p>
-  <button class="btn btn--accent btn--sm" type="button" data-act="listings-start">Найти объявления</button>
-  ${manualListingForm(platforms)}`;
-  const searching = l.status === 'searching';
-  const enter = (x: ListingSearchView['platforms'][number], label: string) =>
-    `<button class="btn btn--ghost btn--sm" type="button" data-act="listing-manual-pick" data-platform="${esc(x.platform)}">${label}</button>`;
-  const row = (x: ListingSearchView['platforms'][number]) => {
-    const url = safeUrl(x.url);
-    let what = '<span class="muted">—</span>';
-    let act = '';
-    if (x.status === 'found') {
-      const note =
-        x.verdict === 'mine'
-          ? x.manual
-            ? 'внесено вручную'
-            : x.why
-          : x.matchTitle
-            ? `${x.matchTitle}: ${x.why ?? ''}`
-            : null;
-      what = `${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(x.listingTitle ?? url)}</a>` : esc(x.listingTitle ?? '')}${x.address ? `<br><span class="muted">${esc(x.address)}</span>` : ''}${x.rating && x.verdict === 'mine' ? `<br><span class="muted">рейтинг ${esc(x.rating)}</span>` : ''}${note ? `<br><span class="hint">${esc(note)}</span>` : ''}${x.error ? `<br><span class="muted">${esc(x.error)}</span>` : ''}`;
-      act =
-        x.verdict === 'mine'
-          ? '<span class="ok-text">✓ подключена</span>'
-          : x.verdict === 'not_mine'
-            ? `<span class="muted">не ваше</span> ${enter(x, 'Моё по ссылке')}`
-            : `<span class="row row--tight"><button class="btn btn--accent btn--sm" type="button" data-act="listing-verdict" data-id="${esc(l.id)}" data-platform="${esc(x.platform)}" data-mine="1">Моё</button><button class="btn btn--ghost btn--sm" type="button" data-act="listing-verdict" data-id="${esc(l.id)}" data-platform="${esc(x.platform)}" data-mine="0">Не моё</button></span>`;
-    } else if (x.status === 'not_found') {
-      what = '<span class="muted">объявления нет</span>';
-      act = x.publishProposed
-        ? '<span class="muted">размещение на согласовании</span>'
-        : `<span class="row row--tight"><button class="btn btn--ghost btn--sm" type="button" data-act="listing-publish" data-id="${esc(l.id)}" data-platform="${esc(x.platform)}" data-title="${esc(x.title)}">Разместить</button>${enter(x, 'Есть — внести ссылку')}</span>`;
-    } else if (x.status === 'failed') {
-      what = `<span class="muted">не прочитано: ${esc(x.error ?? '')}</span>`;
-      act = enter(x, 'Внести ссылку');
-    } else if (x.status === 'not_searched') {
-      what = '<span class="muted">не искали</span>';
-      act = enter(x, 'Внести ссылку');
-    } else if (x.status === 'searching')
-      what = `<span class="muted">${x.byLink || x.recheck ? 'читает по ссылке…' : 'ищет…'}</span>`;
-    return `      <tr><td>${esc(x.title)}</td><td>${what}</td><td>${act}</td></tr>`;
-  };
-  const table = `<div class="table-scroll"><table class="duties">
-    <thead><tr><th>Площадка</th><th>Объявление</th><th><span class="visually-hidden">Действие</span></th></tr></thead>
-    <tbody>
-${l.platforms.map(row).join('\n')}
-    </tbody>
-  </table></div>`;
-  if (searching) {
-    const done = l.platforms.filter((x) => x.status !== 'searching').length;
-    return `<div class="import import--wait" data-poll-url="/api/agents/listings" data-poll-state="${esc(pollState(l.platforms))}" role="status">
+  const own = new Map(
+    ((h.profile.systems ?? []) as System[])
+      .filter((x) => x.listingUrl)
+      .map((x) => [x.id, x.listingUrl!]),
+  );
+  const found = new Map((l?.platforms ?? []).map((x) => [x.platform, x]));
+  const platforms = h.settings.platforms.filter((p) => LISTING_CATEGORIES.has(p.category));
+  if (!platforms.length) return '';
+  const searching = l?.status === 'searching';
+  const rows = platforms.map((p) => {
+    const url = own.get(p.id) ?? '';
+    return `      <div class="listing-row" data-platform="${esc(p.id)}">
+        <label class="field listing-row__field"><span class="field__label">${esc(p.title)}</span><input type="url" name="listing" data-platform="${esc(p.id)}" value="${esc(url)}" placeholder="${esc(LISTING_PLACEHOLDERS[p.id] ?? 'https://…')}" inputmode="url" spellcheck="false"></label>
+        <div class="listing-row__state">${listingState(found.get(p.id), url, l, referenceEmpty && p.category === 'guest')}</div>
+      </div>`;
+  });
+  const wait =
+    searching && l
+      ? `<div class="import import--wait" data-poll-url="/api/agents/listings" data-poll-state="${esc(pollState(l.platforms))}" role="status">
   <span class="spinner" aria-hidden="true"></span>
-  <div><b>Агент ищет объявление: готово ${done} из ${l.platforms.length} площадок…</b><p class="hint">Площадки читаются параллельно; что уже найдено — в таблице, отмечать можно сразу. Страница обновится сама.</p></div>
-</div>
-${table}`;
-  }
-  const mine = l.platforms.some((x) => x.verdict === 'mine');
-  const searched = l.platforms.some((x) => x.status !== 'not_searched');
-  return `${table}
-  <div class="row">
-    ${mine ? '<button class="btn btn--accent btn--sm" type="button" data-act="listings-sync" data-title="Сверить карточки с эталоном">Сверить карточки с эталоном</button>' : ''}
-    <button class="btn btn--ghost btn--sm" type="button" data-act="listings-start">${searched ? 'Обновить поиск' : 'Найти объявления'}</button>
-  </div>
-  ${manualListingForm(platforms)}
-  <p class="hint">${searched ? '«Обновить поиск»' : '«Найти объявления»'} — ваши объявления (подключённые и внесённые вручную) и найденные раньше агент прочитает по ссылке, без поиска; отмеченные «Не моё» пропустит; искать будет только там, где ссылки нет. «Сверить» — агент сравнит описание, удобства и правила на площадках с эталоном и предложит правки. «Разместить» — заполнит анкету объекта по эталону; вход, документы и отправку делаете вы.</p>`;
+  <div><b>Агент ищет объявление: готово ${l.platforms.filter((x) => x.status !== 'searching').length} из ${l.platforms.length} площадок…</b><p class="hint">Площадки читаются параллельно; что уже найдено — в таблице, отмечать можно сразу. Страница обновится сама.</p></div>
+</div>`
+      : '';
+  const mine = !!l && l.platforms.some((x) => x.verdict === 'mine');
+  const searched = !!l && l.platforms.some((x) => x.status !== 'not_searched');
+  return `<p class="hint hint--top">Вставьте ссылки на ваши объявления — как их видят гости. Где объявления нет, оставьте поле пустым.</p>
+  ${wait}
+  <form class="listings" data-form="listings-save" novalidate>
+    <div class="listing-rows" role="group" aria-label="Объявления на площадках">
+${rows.join('\n')}
+    </div>
+    <p class="error" data-form-error role="alert" hidden></p>
+    <div class="row">
+      <button class="btn btn--accent btn--sm" type="submit">Сохранить ссылки</button>
+      ${searching ? '' : `<button class="btn btn--ghost btn--sm" type="button" data-act="listings-start">${searched ? 'Обновить поиск' : 'Найти объявления'}</button>`}
+      ${mine && !searching ? '<button class="btn btn--ghost btn--sm" type="button" data-act="listings-sync" data-title="Сверить карточки с эталоном">Сверить карточки с эталоном</button>' : ''}
+    </div>
+  </form>
+  <p class="hint">Нет ссылок? «Найти объявления» — агент поищет их там, где адрес не известен. «Сверить» — сравнит описание, удобства и правила в карточках с эталоном и предложит правки. «Разместить» — заполнит анкету объекта по эталону; вход, документы и отправку делаете вы.</p>`;
 }
 
 const VERDICTS: Array<['direct' | 'not' | 'unsure', string]> = [
@@ -1120,15 +1105,48 @@ function decision(x: CompetitorSearchView['candidates'][number]): string {
 }
 
 /**
- * «Конкуренты»: the search starts by the owner's button (that is the consent). When every
- * platform is read, the agent decides about each candidate itself: direct ones join «Конкуренты»
- * and their prices go to «Цены». The owner corrects any decision; the answers train the search.
+ * The competitors the agents compare prices with (up to 10): those the agent chose and those the
+ * owner added by hand. The list is saved on its own, and the server changes only it — what the
+ * agent found since the page was opened in the rest of the reference stays.
  */
-function competitorsBlock(c: CompetitorSearchView | null | undefined, listed: number): string {
+function competitorsList(h: HotelView): string {
+  const list = Array.isArray(h.profile.competitors)
+    ? (h.profile.competitors as Array<Record<string, unknown>>)
+    : [];
+  return `<form class="competitors-edit" data-form="competitors-save" novalidate>
+    <p class="hint hint--top" data-competitors-count>В списке ${list.length} из 10. Их цены агент сравнивает с вашими; добавьте своих или уберите лишних.</p>
+    ${listEditor(
+      'competitors',
+      [
+        { key: 'name', label: 'Название', type: 'text', required: true, wide: true },
+        {
+          key: 'url',
+          label: 'Ссылка',
+          type: 'url',
+          required: true,
+          placeholder: 'https://ostrovok.ru/hotel/…',
+          wide: true,
+        },
+      ],
+      list,
+      'Добавить конкурента',
+      '<button class="btn btn--accent btn--sm" type="submit">Сохранить список</button>',
+    )}
+    <p class="error" data-form-error role="alert" hidden></p>
+  </form>`;
+}
+
+/**
+ * The search for competitors: it starts by the owner's button (that is the consent). When every
+ * platform is read, the agent decides about each candidate itself: direct ones join the list of
+ * competitors and their prices go to «Цены». The owner corrects any decision; the answers train
+ * the search.
+ */
+function competitorsBlock(c: CompetitorSearchView | null | undefined): string {
   const start = (label: string) =>
     `<button class="btn btn--${label === 'Найти конкурентов' ? 'accent' : 'ghost'} btn--sm" type="button" data-act="competitors-start">${label}</button>`;
   if (!c)
-    return `<p class="hint">Агент найдёт объекты рядом и сам решит, кто ваш прямой конкурент: сравнит тип, описание, номера, удобства, место и цену. Прямых он добавит в «Конкуренты», посчитает их среднюю и медианную цену и порекомендует вашу. Любое его решение можно поправить — ответ он запомнит. Поиск начнётся только по кнопке.</p>
+    return `<p class="hint">Агент найдёт объекты рядом и сам решит, кто ваш прямой конкурент: сравнит тип, описание, номера, удобства, место и цену. Прямых он добавит в список выше, посчитает их среднюю и медианную цену и порекомендует вашу. Любое его решение можно поправить — ответ он запомнит. Поиск начнётся только по кнопке.</p>
   ${start('Найти конкурентов')}`;
   // While the search runs, what is found so far is shown without decisions: the agent decides
   // about the best of all platforms once every platform is read.
@@ -1162,7 +1180,6 @@ ${c.candidates.length ? `<p class="hint">Пока найдено ${c.found}, с�
   }
   if (!c.candidates.length)
     return `<p class="hint">Похожих объектов рядом не нашлось.</p>
-  <p class="hint" data-competitors-count>В «Конкурентах» сейчас: ${listed}.</p>
   ${start('Искать заново')}`;
   const summary = decided
     ? `<p class="hint">Нашёл ${c.found}, агент отобрал прямых конкурентов: ${c.direct ?? c.candidates.filter((x) => x.verdict === 'direct').length}. Не согласны — нажмите свой ответ, агент его запомнит.</p>
@@ -1172,9 +1189,8 @@ ${c.candidates.length ? `<p class="hint">Пока найдено ${c.found}, с�
   <ol class="competitors">
 ${c.candidates.map(item).join('\n')}
   </ol>
-  <p class="hint" data-competitors-count>В «Конкурентах» сейчас: ${listed}.</p>
   <div class="row">
-    <a class="btn btn--accent btn--sm" href="/agents/prices">Цены и рекомендация</a>
+    <a class="btn btn--accent btn--sm" href="${TAB_PATH.prices}">Цены и рекомендация</a>
     ${start('Искать заново')}
   </div>`;
 }
@@ -1263,6 +1279,8 @@ function listEditor(
   cols: ListColumn[],
   items: Array<Record<string, unknown>>,
   add: string,
+  /** More buttons of the list, next to the one that adds a row. */
+  extra = '',
 ): string {
   const cell = (c: ListColumn, value: unknown) => {
     const v = value === undefined || value === null ? '' : String(value);
@@ -1279,7 +1297,7 @@ function listEditor(
   return `<div class="list-edit list-edit--${esc(key)}" data-list="${esc(key)}">
     <div class="list-edit__rows">${items.map(row).join('')}</div>
     <template data-list-template>${row({})}</template>
-    <button class="btn btn--ghost btn--sm" type="button" data-list-add>+ ${esc(add)}</button>
+    <button class="btn btn--ghost btn--sm" type="button" data-list-add>+ ${esc(add)}</button>${extra}
   </div>`;
 }
 
@@ -1296,7 +1314,8 @@ function systemsEditor(h: HotelView): string {
   );
   const known = new Set(h.settings.platforms.map((p) => p.id));
   const groups = new Map<string, HotelView['settings']['platforms']>();
-  for (const p of h.settings.platforms) {
+  // The CRM has a form of its own (the cabinet's «Настройки»); a form does not drop what it does not show.
+  for (const p of h.settings.platforms.filter((x) => !CRM_CATEGORIES.has(x.category))) {
     const list = groups.get(p.category) ?? [];
     list.push(p);
     groups.set(p.category, list);
@@ -1311,14 +1330,16 @@ function systemsEditor(h: HotelView): string {
     `<label class="field"><span class="field__label">${label}</span><input type="${type}" data-key="${key}" data-type="${type === 'number' ? 'number' : 'text'}"${type === 'number' ? ' min="0" max="100" step="0.1"' : ' placeholder="https://…"'} value="${esc(String(item?.[key] ?? ''))}" aria-label="${label}: ${esc(title)}"></label>`;
   const sys = (id: string, title: string, category: string) => {
     const item = connected.get(id);
-    // Platforms for guests and agencies also have chats, reviews, a listing and a commission.
+    // Platforms for guests and agencies also have chats, reviews and a commission; the listing of
+    // a platform for guests is in «Объявления на площадках», only the agencies' is here.
+    const b2b = category === 'b2b';
     const more =
-      category === 'guest' || category === 'b2b'
-        ? `<details class="sys__more"${item && (item.messagesUrl || item.reviewsUrl || item.listingUrl || item.commissionPercent !== undefined) ? ' open' : ''}>
+      category === 'guest' || b2b
+        ? `<details class="sys__more"${item && (item.messagesUrl || item.reviewsUrl || (b2b && item.listingUrl) || item.commissionPercent !== undefined) ? ' open' : ''}>
           <summary>Сообщения, отзывы, комиссия</summary>
           ${field(item, 'messagesUrl', 'Страница сообщений гостей', 'url', title)}
           ${field(item, 'reviewsUrl', 'Страница отзывов', 'url', title)}
-          ${field(item, 'listingUrl', 'Ваше объявление, как его видят гости', 'url', title)}
+          ${b2b ? field(item, 'listingUrl', 'Ваше объявление, как его видят гости', 'url', title) : ''}
           ${field(item, 'commissionPercent', 'Комиссия площадки, %', 'number', title)}
         </details>`
         : '';
@@ -1359,7 +1380,6 @@ function profileForm(h: HotelView): string {
   const systems = list('systems');
   const faq = list('faq');
   const upsells = list('upsells');
-  const competitors = list('competitors');
   const units = rooms.reduce((n, r) => n + (Number(r.count) || 0), 0);
   const text = (name: string, label: string, value: unknown, type = 'text', placeholder = '') =>
     `<label class="field"><span class="field__label">${esc(label)}</span><input name="${esc(name)}" type="${type}" value="${esc(String(value ?? ''))}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ''}></label>`;
@@ -1383,7 +1403,7 @@ function profileForm(h: HotelView): string {
       ? `${rooms.length} категор${rooms.length === 1 ? 'ия' : rooms.length < 5 ? 'ии' : 'ий'}, номеров — ${units}`
       : 'не заполнено',
     !rooms.length,
-    `<p class="hint hint--top">Категории номеров, как на площадках. Без них управляющий не посчитает загрузку, ADR и RevPAR. ${helpLink('rooms', 'Подробнее')}</p>
+    `<p class="hint hint--top">Категории номеров, как на площадках. Без них управляющий не посчитает загрузку, ADR и RevPAR.</p>
   ${listEditor(
     'rooms',
     [
@@ -1408,7 +1428,7 @@ function profileForm(h: HotelView): string {
     'Системы и площадки',
     systems.length ? `подключено ${systems.length}` : 'ничего не отмечено',
     !systems.length,
-    `<p class="hint hint--top">Отметьте PMS, площадки и кабинеты, где ведёте объект. Адрес кабинета — ссылка, по которой вы входите; агенты работают в вашем браузере с вашими входами. Объявления для гостей проще подключить кнопкой «Найти объявления» ниже. ${helpLink('systems', 'Подробнее')}</p>
+    `<p class="hint hint--top">Отметьте площадки, карты, рекламу и другие кабинеты, где ведёте объект. Адрес кабинета — ссылка, по которой вы входите; агенты работают в вашем браузере с вашими входами. CRM указывается в «Настройках», ссылки на объявления — в блоке «Объявления на площадках» ниже.</p>
   ${systemsEditor(h)}`,
   )}
   ${group(
@@ -1432,7 +1452,7 @@ function profileForm(h: HotelView): string {
     'Ответы гостям',
     faq.length ? `готовых ответов — ${faq.length}` : 'нет',
     false,
-    `<p class="hint hint--top">Готовые ответы на частые вопросы: агент «Гости» отправит их как есть. На жалобы агент сам не отвечает — пришлёт вам черновик. ${helpLink('faq', 'Подробнее')}</p>
+    `<p class="hint hint--top">Готовые ответы на частые вопросы: агент «Гости» отправит их как есть. На жалобы агент сам не отвечает — пришлёт вам черновик.</p>
   ${listEditor(
     'faq',
     [
@@ -1477,29 +1497,6 @@ function profileForm(h: HotelView): string {
     'Добавить допродажу',
   )}`,
   )}
-  ${group(
-    'profile-competitors',
-    'Конкуренты',
-    competitors.length ? `${competitors.length} из 10` : 'нет',
-    false,
-    `<p class="hint hint--top">Их цены агент сравнивает с вашими. Проще найти их кнопкой «Найти конкурентов» ниже — агент отберёт прямых сам. ${helpLink('competitors', 'Подробнее')}</p>
-  ${listEditor(
-    'competitors',
-    [
-      { key: 'name', label: 'Название', type: 'text', required: true, wide: true },
-      {
-        key: 'url',
-        label: 'Ссылка',
-        type: 'url',
-        required: true,
-        placeholder: 'https://ostrovok.ru/hotel/…',
-        wide: true,
-      },
-    ],
-    competitors,
-    'Добавить конкурента',
-  )}`,
-  )}
   <input type="hidden" name="base" value="${attr(p)}">
   <div class="savebar">
     <button class="btn btn--accent" type="submit">Сохранить эталон</button>
@@ -1509,13 +1506,14 @@ function profileForm(h: HotelView): string {
 </form>`;
 }
 
-// ---------------------------------------------------------------- «Настройки»
+// ---------------------------------------------------------------- «Агенты»: the platforms
 
+/** What the agents may do on each platform the owner is on: work, only read, or skip it. */
 function platformsBlock(h: HotelView): string {
   const connected = new Set((h.profile.systems ?? []).map((s) => s.id));
   const list = h.settings.platforms.filter((p) => connected.has(p.id));
   if (!list.length)
-    return `<p class="hint">Площадки и системы появятся здесь, когда вы отметите их в эталоне объекта — раздел «Системы и площадки». <a href="${agentsHref('profile-title')}">Открыть эталон</a></p>`;
+    return `<p class="hint">Площадки и системы появятся здесь, когда вы подключите их: ссылки на объявления — в разделе «<a href="${cabinetHref('listings-title')}">Объект</a>», CRM — в «<a href="${cabinetHref('crm-title')}">Настройках</a>».</p>`;
   return `<ul class="platforms">
 ${list
   .map(
@@ -1533,89 +1531,54 @@ ${list
   </ul>`;
 }
 
-function ownerForm(h: HotelView): string {
-  const o = h.settings.owner;
-  const stars = h.settings.limits.reviewAutoMinStars;
-  return `<form class="owner" data-form="owner">
-  <div class="grid2">
-    <label class="field"><span class="field__label">Утренняя сводка в</span><input name="summaryTime" type="time" value="${esc(o.summaryTime)}"></label>
-    <label class="field"><span class="field__label">Срочных в день, не больше</span><input name="urgentPerDay" type="number" min="0" max="50" value="${o.urgentPerDay}"><span class="field__hint">сверх лимита — в следующую сводку</span></label>
-    <div class="field"><span class="field__label" id="quiet-label">Тихие часы</span><span class="field__pair" role="group" aria-labelledby="quiet-label"><input name="quietFrom" type="time" value="${esc(o.quietFrom)}" aria-label="Тихие часы с"><span aria-hidden="true">—</span><input name="quietTo" type="time" value="${esc(o.quietTo)}" aria-label="Тихие часы до"></span><span class="field__hint">в это время срочное ждёт утра</span></div>
-    <label class="field"><span class="field__label">Отвечать на отзывы без согласования</span><select name="reviewAutoMinStars">${[
-      5, 4, 3, 2, 1, 6,
-    ]
-      .map(
-        (n) =>
-          `<option value="${n}"${n === stars ? ' selected' : ''}>${n === 6 ? 'никогда — все ответы на согласование' : n === 1 ? 'на все отзывы' : `на ${n}★${n < 5 ? ' и выше' : ''}`}</option>`,
-      )
-      .join(
-        '',
-      )}</select><span class="field__hint">на остальные — черновик вам на согласование</span></label>
-  </div>
-  <button class="btn btn--ghost btn--sm" type="submit">Сохранить</button>
-</form>`;
-}
-
-export function telegramBlock(h: HotelView): string {
-  if (h.telegramBot === false)
-    return `<p class="hint">Telegram-бот ещё не настроен на сервере. Пока сообщения управляющего — на вкладке «Сегодня» и в расширении.</p>`;
-  return `<div class="tg-link${h.telegramLinked ? ' tg-link--on' : ''}">
-  <p>${h.telegramLinked ? '<b>Telegram привязан</b> — сводки, срочное и согласования приходят туда.' : '<b>Telegram не привязан.</b> Привяжите — управляющий будет присылать сводку, срочное и кнопки согласований.'}</p>
-  <button class="btn ${h.telegramLinked ? 'btn--ghost' : 'btn--accent'} btn--sm" type="button" data-act="telegram">${h.telegramLinked ? 'Привязать другой чат' : 'Привязать Telegram'}</button>
-  <p class="hint" data-telegram hidden></p>
-</div>`;
-}
-
-function hookBlock(goldfishUrl: string): string {
-  return `<p class="hint hint--top">Для писем-уведомлений площадок, вебхуков PMS и своего мессенджера: адреса с токеном объекта. Новый токен отзывает старый.</p>
-<button class="btn btn--ghost btn--sm" type="button" data-act="hook-token" data-base="${esc(goldfishUrl)}">Выпустить токен вебхуков</button>
-<div class="field" data-hook hidden>
-  <span class="field__label">События (PMS, мессенджер)</span>
-  <span class="field__row"><input readonly data-hook-events aria-label="Адрес событий"><button class="btn btn--ghost btn--sm" type="button" data-copy-from-attr="data-hook-events">Копировать</button></span>
-  <span class="field__label">Пересылка писем</span>
-  <span class="field__row"><input readonly data-hook-email aria-label="Адрес писем"><button class="btn btn--ghost btn--sm" type="button" data-copy-from-attr="data-hook-email">Копировать</button></span>
-</div>`;
-}
-
-// ---------------------------------------------------------------- the page
-
-/** Messages after a change: fixed at the bottom of the screen, so the page does not jump. */
-export function toasts(): string {
-  return `<div class="toasts">
-  <div class="toast toast--error" data-page-error role="alert" hidden><span data-toast-text></span><button class="toast__close" type="button" data-toast-close aria-label="Скрыть">×</button></div>
-  <div class="toast" data-page-status role="status" hidden><span data-toast-text></span><button class="toast__close" type="button" data-toast-close aria-label="Скрыть">×</button></div>
-</div>`;
-}
+// ---------------------------------------------------------------- the pages
 
 /**
- * The owner's agents in four tabs: «Сегодня» (what waits for them, numbers, messages),
- * «Команда» (agents, rights, waves, pause), «Объект» (the reference, listings, competitors) and
- * «Настройки» (platforms, Telegram, webhooks). Every tab is in the page: app.js switches them
- * without a reload; without a script `?tab=` opens one.
+ * «Сегодня»: the first steps while something is left, the study while the agents read, then what
+ * waits for the owner — decisions, numbers, the manager's messages (the part that refreshes itself).
  */
-export function renderAgents(s: AgentsState): string {
+export function renderToday(s: TodayState): string {
   const h = s.hotel;
-  if (!h) {
-    return layout(
-      s,
-      'Агенты — Goldfish',
-      `${header(s.user)}
-<main class="wrap empty">
-  <h1>Агенты объекта</h1>
-  <p class="notice" role="status">${esc(s.error ?? 'Сервер агентов сейчас недоступен — попробуйте через минуту.')}</p>
-  <p class="lead"><a href="/start">К настройке</a></p>
-</main>`,
-    );
-  }
-  const tab = s.tab ?? 'today';
-  const name = String(h.profile.name ?? '');
-  const guest = h.settings.platforms
-    .filter((p) => p.category === 'guest')
-    .map((p) => ({ id: p.id, title: p.title }));
-  const today = todayPanel(s);
-  const team = `  ${launchBlock(h)}
-  ${teamBlock(h)}`;
-  const property = `  <section class="card" aria-labelledby="profile-title">
+  return cabinetPage(
+    s,
+    'today',
+    h
+      ? `  ${studyCard(h, s.study)}
+  ${firstSteps(s, h)}
+  <div class="stack" data-today data-rev="${esc(s.desk.rev)}">
+${todayPanel({ user: s.user, hotel: h, desk: s.desk })}
+  </div>`
+      : '',
+  );
+}
+
+/** «Агенты»: the mode of work (waves, autonomy, pause), the agents with their rights, the platforms. */
+export function renderTeam(s: CabinetState): string {
+  const h = s.hotel;
+  return cabinetPage(
+    s,
+    'agents',
+    h
+      ? `  ${launchBlock(h)}
+  ${teamBlock(h)}
+  <section class="card" aria-labelledby="platforms-title">
+    <div class="card__head"><h2 id="platforms-title">Площадки</h2>${helpLink('platforms', 'Что значат режимы?')}</div>
+    <p class="hint hint--top">Что агентам можно на каждой подключённой площадке: работать, только сверять или пропускать её.</p>
+    ${platformsBlock(h)}
+  </section>`
+      : '',
+  );
+}
+
+/** «Объект»: the reference (from a card or by hand), where the property is listed, the competitors. */
+export function renderProperty(s: PropertyState): string {
+  const h = s.hotel;
+  const rooms = (h?.profile.rooms as unknown[] | undefined) ?? [];
+  return cabinetPage(
+    s,
+    'property',
+    h
+      ? `  <section class="card" aria-labelledby="profile-title">
     <div class="card__head"><h2 id="profile-title">Эталон объекта</h2>${helpLink('profile-card', 'Как заполнить?')}</div>
     <p class="hint hint--top">Единый источник правды для всех агентов: по нему сверяются карточки и сайт, из него собираются ответы гостям.</p>
     ${importBlock(s.profileImport)}
@@ -1624,51 +1587,16 @@ export function renderAgents(s: AgentsState): string {
       ${profileForm(h)}
     </details>
   </section>
-  <section class="cabinet" aria-label="После эталона">
-    <article class="card">
-      <div class="card__head"><h2 id="listings-title">Объявления на площадках</h2>${helpLink('systems', 'Зачем?')}</div>
-      ${listingsBlock(s.listings, guest)}
-    </article>
-    <article class="card">
-      <div class="card__head"><h2 id="competitors-title">Конкуренты</h2><span class="row row--tight"><a href="/agents/prices">Цены</a>${helpLink('competitors-auto', 'Как агент решает?')}</span></div>
-      ${competitorsBlock(s.competitorSearch, ((h.profile.competitors as unknown[] | undefined) ?? []).length)}
-    </article>
-  </section>`;
-  const settings = `  <section class="card" aria-labelledby="platforms-title">
-    <div class="card__head"><h2 id="platforms-title">Площадки</h2>${helpLink('platforms', 'Что значат режимы?')}</div>
-    <p class="hint hint--top">Что агентам можно на каждой подключённой площадке: работать, только сверять или пропускать её.</p>
-    ${platformsBlock(h)}
+  <section class="card" aria-labelledby="listings-title">
+    <div class="card__head"><h2 id="listings-title">Объявления на площадках</h2></div>
+    ${listingsBlock(s.listings, h, !h.profile.name || !rooms.length)}
   </section>
-  <section class="card" aria-labelledby="telegram-title">
-    <div class="card__head"><h2 id="telegram-title">${s.bots ? 'Управляющий и мессенджеры' : 'Управляющий и Telegram'}</h2>${helpLink(s.bots ? 'bots' : 'tg-quiet', 'Как настроить?')}</div>
-    ${s.bots ? `<p class="hint hint--top">Привяжите Telegram, MAX или WhatsApp: туда придут сводка, срочное и согласования, оттуда можно поручать агентам задачи.</p>${botsBlock(s.bots, { unlink: true, refreshHref: agentsHref('telegram-title') })}` : telegramBlock(h)}
-    ${ownerForm(h)}
-  </section>
-  <section class="card" aria-labelledby="hooks-title">
-    <div class="card__head"><h2 id="hooks-title">Вебхуки объекта</h2>${helpLink('mail', 'Зачем они?')}</div>
-    ${hookBlock(s.goldfishUrl)}
-  </section>`;
-  return layout(
-    s,
-    `${TAB_TITLES[tab]} — агенты — Goldfish`,
-    `${header(s.user)}
-<main class="wrap agents" data-agents>
-  <section class="hero hero--user hero--agents">
-    <div class="hero__text">
-      <p class="eyebrow"><a href="/start">Настройка</a> · агенты объекта</p>
-      <h1>${name ? esc(name) : 'Ваш объект'}</h1>
-      ${statusStrip(s)}
-    </div>
-  </section>
-  ${s.error ? `<p class="notice" role="status">${esc(s.error)}</p>` : ''}
-  ${studyCard(h, s.study)}
-  ${tabsNav(tab, s.desk.status)}
-  ${panel('today', tab, today, s.desk.rev)}
-  ${panel('team', tab, team)}
-  ${panel('property', tab, property)}
-  ${panel('settings', tab, settings)}
-  ${permissionDialog()}
-  ${toasts()}
-</main>`,
+  <section class="card" aria-labelledby="competitors-title">
+    <div class="card__head"><h2 id="competitors-title">Конкуренты</h2>${helpLink('competitors-auto', 'Как агент решает?')}</div>
+    ${competitorsList(h)}
+    <h3 class="card__sub">Найти конкурентов</h3>
+    ${competitorsBlock(s.competitorSearch)}
+  </section>`
+      : '',
   );
 }

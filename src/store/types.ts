@@ -14,8 +14,8 @@ export interface UserRecord {
   tokenIssuedAt: string | null;
   lastDownloadAt: string | null;
   /**
-   * When the owner finished the setup wizard (/start) and the agents began to study: until then
-   * the site greets them with the wizard.
+   * When the owner launched the agents (the last of the first steps in the cabinet) and they
+   * began to study: until then the cabinet shows the whole list of first steps, with the CRM.
    */
   onboardedAt: string | null;
 }

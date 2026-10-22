@@ -16,18 +16,23 @@ afterEach(async () => {
 
 const origin = { origin: PUBLIC_URL };
 const rub = (n: number) => `${n.toLocaleString('ru-RU')}\u00a0₽`;
-/** The agents page writes prices with a plain space. */
+/** The reference writes prices with a plain space. */
 const plain = (n: number) => `${n.toLocaleString('ru-RU')} ₽`;
 
 describe('«Цены»: the dashboard of the direct competitors’ prices', () => {
   it('shows the recommendation, the market, charts with their tables, the competitors and the proofs', async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    const res = await t.app.inject({ url: '/agents/prices', cookies });
+    const res = await t.app.inject({ url: '/cabinet/prices', cookies });
     expect(res.statusCode).toBe(200);
     expect(res.headers['cache-control']).toBe('private, no-store');
     const html = res.body;
-    expect(html).toContain('<h1>Цены — Дом у моря</h1>');
+    // «Цены» is a section of the cabinet: the property, the tabs, the section marked.
+    expect(html).toContain('<h1>Дом у моря</h1>');
+    expect(html).toContain('<title>Цены — личный кабинет — Goldfish</title>');
+    expect(html).toContain(
+      '<a class="tabs__tab" href="/cabinet/prices" aria-current="page">Цены</a>',
+    );
     // The headline: the median as the recommended price, the average next to it.
     expect(html).toContain(`<p class="price-hero__value">${rub(5900)}</p>`);
     expect(html).toContain('Рекомендованная цена «от» — медиана 3 прямых конкурентов');
@@ -85,23 +90,26 @@ describe('«Цены»: the dashboard of the direct competitors’ prices', () =
       proofs: [],
       search: null,
     };
-    const html = (await t.app.inject({ url: '/agents/prices', cookies })).body;
+    const html = (await t.app.inject({ url: '/cabinet/prices', cookies })).body;
     expect(html).toContain('Прямых конкурентов пока нет — запустите поиск конкурентов.');
-    expect(html).toContain('href="/agents?tab=property#competitors-title"');
+    expect(html).toContain('href="/cabinet/property#competitors-title"');
     expect(html).not.toContain('class="viz"');
   });
 
   it('says when the server is unavailable, and needs a session', async () => {
     t = await startApp();
-    expect((await t.app.inject({ url: '/agents/prices' })).headers.location).toBe('/auth/yandex');
+    expect((await t.app.inject({ url: '/cabinet/prices' })).headers.location).toBe('/auth/yandex');
+    expect((await t.app.inject({ url: '/agents/prices' })).headers.location).toBe(
+      '/cabinet/prices',
+    );
     const cookies = await signIn(t);
     // An older Goldfish without «Цены».
     t.fakes.prices = null;
-    expect((await t.app.inject({ url: '/agents/prices', cookies })).body).toContain(
+    expect((await t.app.inject({ url: '/cabinet/prices', cookies })).body).toContain(
       'Сервер агентов ещё не умеет считать цены конкурентов',
     );
     t.fakes.goldfishDown = true;
-    const html = (await t.app.inject({ url: '/agents/prices', cookies })).body;
+    const html = (await t.app.inject({ url: '/cabinet/prices', cookies })).body;
     expect(html).toContain('Сервер агентов сейчас недоступен');
   });
 
@@ -151,7 +159,7 @@ describe('«Цены»: the dashboard of the direct competitors’ prices', () =
   });
 });
 
-describe('competitors on the agents page: decided by the agent', () => {
+describe('competitors in «Объект»: decided by the agent', () => {
   it('shows each decision with its reason, the prices of the direct ones and the way to «Цены»', async () => {
     t = await startApp();
     const cookies = await signIn(t);
@@ -181,7 +189,7 @@ describe('competitors on the agents page: decided by the agent', () => {
         },
       ],
     };
-    const html = (await t.app.inject({ url: '/agents', cookies })).body;
+    const html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain('агент отобрал прямых конкурентов: 1');
     expect(html).toContain(
       '<span class="by by--agent">агент: прямой конкурент</span> гостевой дом рядом, цена как у вас',
@@ -193,7 +201,7 @@ describe('competitors on the agents page: decided by the agent', () => {
       `Их цены «от»: средняя <b>${plain(5200)}</b>, медиана <b>${plain(5200)}</b>`,
     );
     expect(html).toContain('class="competitor competitor--direct"');
-    expect(html).toContain('href="/agents/prices"');
+    expect(html).toContain('href="/cabinet/prices"');
     // The owner can still correct every decision.
     expect(html).toContain('data-act="competitor-verdict" data-id="cmp_1" data-verdict="not"');
   });

@@ -46,7 +46,7 @@ export class MemoryStore implements Store {
   async markOnboarded(userId: string): Promise<UserRecord> {
     const user = this.users.get(userId);
     if (!user) throw new Error(`unknown user ${userId}`);
-    // The first finish counts: the wizard opened again does not move it.
+    // The first launch counts: a later one does not move it.
     user.onboardedAt ??= new Date().toISOString();
     return { ...user };
   }

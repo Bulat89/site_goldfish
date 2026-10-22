@@ -19,34 +19,54 @@ interface PageState extends View {
 
 export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/** «2026-11-20» → «20.11.2026». */
+export const day = (ymd: string) => {
+  const [y, m, d] = ymd.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : ymd;
+};
+
 /** «Как это сделать?» next to a place on the site: the guide's answer about it (/help#id). */
 export const helpLink = (id: string, text = 'Как это сделать?') =>
   `<a class="help-link" href="/help#${esc(id)}">${esc(text)}</a>`;
 
-/** Tabs of the agents page («Сегодня», «Команда», «Объект», «Настройки»), opened by `?tab=`. */
-export const AGENT_TABS = ['today', 'team', 'property', 'settings'] as const;
-export type AgentTab = (typeof AGENT_TABS)[number];
+/** The sections of the personal cabinet: each one is a page of its own, one tab of the bar. */
+export const CABINET_TABS = ['today', 'agents', 'property', 'prices', 'settings'] as const;
+export type CabinetTab = (typeof CABINET_TABS)[number];
 
-/** The tab of the agents page each of its anchors is on. */
+export const TAB_PATH: Record<CabinetTab, string> = {
+  today: '/cabinet',
+  agents: '/cabinet/agents',
+  property: '/cabinet/property',
+  prices: '/cabinet/prices',
+  settings: '/cabinet/settings',
+};
+
+/** The section of the cabinet each of its anchors is on. */
 const ANCHOR_TAB = {
   'first-title': 'today',
+  'study-title': 'today',
   'approvals-title': 'today',
   'kpi-title': 'today',
   'feed-title': 'today',
-  'launch-title': 'team',
-  'autonomy-title': 'team',
-  'team-title': 'team',
+  'launch-title': 'agents',
+  'autonomy-title': 'agents',
+  'team-title': 'agents',
+  'platforms-title': 'agents',
   'profile-title': 'property',
   'listings-title': 'property',
   'competitors-title': 'property',
-  'platforms-title': 'settings',
+  'extension-title': 'settings',
+  connect: 'settings',
+  'crm-title': 'settings',
   'telegram-title': 'settings',
+  'owner-title': 'settings',
   'hooks-title': 'settings',
-} as const satisfies Record<string, AgentTab>;
-export type AgentAnchor = keyof typeof ANCHOR_TAB;
+  'account-title': 'settings',
+} as const satisfies Record<string, CabinetTab>;
+export type CabinetAnchor = keyof typeof ANCHOR_TAB;
 
-/** A place on the agents page: its tab opens without a script too, then the anchor. */
-export const agentsHref = (anchor: AgentAnchor) => `/agents?tab=${ANCHOR_TAB[anchor]}#${anchor}`;
+/** A place in the cabinet: the page of its section, then the anchor. */
+export const cabinetHref = (anchor: CabinetAnchor) => `${TAB_PATH[ANCHOR_TAB[anchor]]}#${anchor}`;
 
 const NOTICE_TEXT: Record<Notice, string> = {
   login_denied: 'Вход отменён. Чтобы получить доступ, разрешите сайту доступ к профилю Яндекс ID.',
@@ -95,7 +115,9 @@ ${body}
 </html>`;
 }
 
-export function header(user: UserRecord | null): string {
+/** The top of every page: the way to the cabinet for an owner, the guide for everyone. */
+export function header(user: UserRecord | null, current?: 'cabinet' | 'help'): string {
+  const here = (page: typeof current) => (page === current ? ' aria-current="page"' : '');
   const right = user
     ? `<div class="me">
         ${user.avatarId ? `<img class="avatar" src="https://avatars.yandex.net/get-yapic/${encodeURIComponent(user.avatarId)}/islands-68" alt="" width="32" height="32">` : `<span class="avatar avatar--empty" aria-hidden="true">${esc((user.name ?? user.login ?? '?').slice(0, 1).toUpperCase())}</span>`}
@@ -106,8 +128,8 @@ export function header(user: UserRecord | null): string {
   return `<header class="top wrap">
   <a class="brand" href="/">${LOGO}<span>Goldfish</span></a>
   <nav class="top__nav" aria-label="Разделы">
-    ${user ? `<a href="/start">Настройка</a><a href="/agents">Агенты</a>` : ''}
-    <a href="/help">Инструкция</a>
+    ${user ? `<a href="/cabinet"${here('cabinet')}>Личный кабинет</a>` : ''}
+    <a href="/help"${here('help')}>Инструкция</a>
   </nav>
   ${right}
 </header>`;
@@ -160,7 +182,7 @@ const AGENTS: AgentCard[] = [
   {
     icon: 'prices',
     title: 'Цены и загрузка',
-    text: 'Работа ревеню-менеджера: сколько стоит ночь на каждую дату.',
+    text: 'Работа ревенью-менеджера: сколько стоит ночь на каждую дату.',
     duties: [
       'цены 5–10 конкурентов рядом с цитатой на каждую цифру',
       'загрузка и темп броней, рекомендация цены с объяснением',
@@ -246,7 +268,7 @@ const RULES = `<section class="features wrap" aria-labelledby="rules-title">
     </article>
     <article class="feature">
       <h3>Выключить можно всё</h3>
-      <p>Агента, обязанность, площадку, права или поставить паузу — командой в Telegram («выключи рекламу», «пауза до 15.11 ремонт») или на странице настроек. Выключенное не открывает кабинеты и не тратит токены.</p>
+      <p>Агента, обязанность, площадку, права или поставить паузу — командой в Telegram («выключи рекламу», «пауза до 15.11 ремонт») или в личном кабинете. Выключенное не открывает кабинеты и не тратит токены.</p>
     </article>
   </div>
 </section>`;
@@ -279,20 +301,11 @@ const SYSTEMS = [
 const HOW = `<section class="how wrap" aria-labelledby="how-title">
   <h2 id="how-title" class="section-title">Как это работает</h2>
   <ol class="steps">
-    <li><b>Агенты ставят задания</b> исполнителям Goldfish: один читает страницы, другой меняет данные. Повтор частых заданий — без затрат на модель.</li>
-    <li><b>Исполнители работают в вашем браузере</b> — в PMS и кабинетах площадок с вашими входами. Пароли агенты не вводят, необратимые действия проверяет верификатор.</li>
-    <li><b>Важное — после вашего «да»</b>: сводка, срочное и кнопки согласований приходят от управляющего в Telegram.</li>
+    <li><b>Подключаетесь за несколько минут.</b> Войдите через Яндекс ID, поставьте расширение в браузер, где открыты ваши PMS и кабинеты площадок, и дайте ссылки на объявления и кабинет CRM — ключ подключения сайт выдаст сам.</li>
+    <li><b>Агенты сначала только изучают.</b> Они открывают ваши кабинеты в вашем браузере, с вашими входами, и запоминают дорогу к броням, ценам и отзывам. Пароли агенты не вводят и ничего не меняют, пока вы не разрешите работу.</li>
+    <li><b>Важное — после вашего «да».</b> Сводка, срочное и кнопки согласований приходят от управляющего в Telegram.</li>
   </ol>
   <p class="systems" aria-label="Системы">${SYSTEMS.map((x) => `<span class="chip">${x}</span>`).join(' ')}</p>
-</section>`;
-
-const WAVES = `<section class="how wrap" aria-labelledby="waves-title">
-  <h2 id="waves-title" class="section-title">Запуск волнами</h2>
-  <ol class="steps">
-    <li><b>Видеть всё и не терять брони.</b> Сверка площадок и защита от овербукинга, сводка и срочное, конкуренты и загрузка, сбор отзывов, письмо после выезда.</li>
-    <li><b>Отвечать и советовать.</b> Ответы гостям и на отзывы, рекомендации цен, аналитика рекламы и каналов, согласования в Telegram.</li>
-    <li><b>Действовать по правилам.</b> Цены сами в коридоре, акции под пустые даты, управление рекламой, рассылки постоянным гостям, сайт и фото.</li>
-  </ol>
 </section>`;
 
 function guest(): string {
@@ -311,19 +324,10 @@ function guest(): string {
 </section>
 ${TEAM}
 ${HOW}
-${RULES}
-${WAVES}
-<section class="how wrap" aria-labelledby="start-title">
-  <h2 id="start-title" class="section-title">Как начать</h2>
-  <ol class="steps">
-    <li><b>Войдите и установите расширение</b> в браузер, где открыты ваши PMS и кабинеты площадок, — ключ подключения сайт выдаст сам.</li>
-    <li><b>Дайте ссылки</b> на объявления и кабинет CRM: по эталонному объявлению агент заполнит эталон объекта. Привяжите бота по QR-коду.</li>
-    <li><b>Соберите команду</b>: сначала агенты только изучают ваши кабинеты и запоминают дорогу, ничего не меняя. Работу разрешаете вы.</li>
-  </ol>
-</section>`;
+${RULES}`;
 }
 
-/** A signed-in user without access: why. The others go to the setup wizard or their agents. */
+/** A signed-in user without access: why. The others go to their cabinet. */
 function noAccess(user: UserRecord, access: Extract<AccessState, { allowed: false }>): string {
   const first = (user.name ?? user.login ?? '').split(/\s+/)[0] ?? '';
   return `<section class="hero hero--user wrap">

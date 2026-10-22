@@ -1,5 +1,5 @@
-import type { UserRecord } from '../store/types.js';
-import { agentsHref, esc, header, helpLink, layout, type View } from './page.js';
+import { cabinetPage, type CabinetState } from './cabinet.js';
+import { cabinetHref, esc, helpLink } from './page.js';
 
 /**
  * «Цены»: the direct competitors the pricing agent chose, the average and the median of their
@@ -68,11 +68,8 @@ export interface PriceBoardView {
   search: { id: string; found: number; direct: number; createdAt: string } | null;
 }
 
-export interface PricesState extends View {
-  user: UserRecord;
-  hotelName: string | null;
+export interface PricesState extends CabinetState {
   board: PriceBoardView | null;
-  error: string | null;
 }
 
 const rub = (n: number) => `${Math.round(n).toLocaleString('ru-RU')}\u00a0₽`;
@@ -345,7 +342,7 @@ function recommendationBlock(b: PriceBoardView): string {
   const rec = b.recommendation;
   if (!rec || !st)
     return `<p class="notice" role="status">${esc(b.note ? b.note[0]!.toUpperCase() + b.note.slice(1) : 'Рекомендации пока нет')}.</p>
-<p><a class="btn btn--ghost btn--sm" href="${agentsHref('competitors-title')}">К поиску конкурентов</a></p>`;
+<p><a class="btn btn--ghost btn--sm" href="${cabinetHref('competitors-title')}">К поиску конкурентов</a></p>`;
   const tiles: Array<[string, string, string?]> = [
     ['Медиана', rub(st.median), 'половина конкурентов дешевле, половина дороже'],
     ['Средняя', rub(st.mean)],
@@ -416,7 +413,7 @@ ${b.competitors
   .join('\n')}
   </tbody>
 </table></div>
-<p class="hint">Не согласны с агентом — ответьте «Нет» или «Прямой конкурент» в блоке «Конкуренты» на <a href="${agentsHref('competitors-title')}">странице агентов</a>: он учтёт ваш ответ в следующих поисках.</p>`;
+<p class="hint">Не согласны с агентом — ответьте «Нет» или «Прямой конкурент» в блоке «Конкуренты» в разделе «<a href="${cabinetHref('competitors-title')}">Объект</a>»: он учтёт ваш ответ в следующих поисках.</p>`;
 }
 
 /** Every price with the words of its page: the proof of each number on this page. */
@@ -495,21 +492,10 @@ export function renderPrices(s: PricesState): string {
         .filter(Boolean)
         .join('\n')
     : '';
-  return layout(
+  return cabinetPage(
     s,
-    'Цены — Goldfish',
-    `${header(s.user)}
-<main class="wrap agents prices">
-  <section class="hero hero--user">
-    <div class="hero__text">
-      <p class="eyebrow"><a href="/start">Настройка</a> · <a href="/agents?tab=property">агенты объекта</a> · цены</p>
-      <h1>Цены${s.hotelName ? ` — ${esc(s.hotelName)}` : ''}</h1>
-      <p class="lead">Агент «Цены и загрузка» сам отбирает прямых конкурентов — сравнивает тип, описание, номера, удобства, место и цену — и считает по ним среднюю и медиану. Каждая цифра здесь — с цитатой со страницы и ссылкой на неё.</p>
-    </div>
-  </section>
-  ${s.error ? `<p class="notice" role="status">${esc(s.error)}</p>` : ''}
-  <p class="error" data-page-error role="alert" hidden></p>
-  <p class="notice" data-page-status role="status" hidden></p>
+    'prices',
+    `  <p class="tab-lead">Цены прямых конкурентов, которых отобрал агент: средняя, медиана и рекомендация для вашего объекта. Каждая цифра — с цитатой со страницы и ссылкой на неё.</p>
 ${
   b
     ? `  <section class="card" aria-labelledby="rec-title">
@@ -535,7 +521,6 @@ ${
     ${proofsBlock(b)}
   </section>`
     : ''
-}
-</main>`,
+}`,
   );
 }

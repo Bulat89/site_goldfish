@@ -53,14 +53,11 @@ const date = (iso: string) =>
 
 /**
  * «Боты в мессенджерах»: a QR code per messenger with the owner's one-time code, which chats are
- * linked and, on the agents page, unlinking them.
+ * linked and unlinking them. `refreshHref` is the page itself: new codes are made on each open.
  */
-export function botsBlock(
-  state: BotsState,
-  opts: { unlink: boolean; refreshHref: string; agentsHref?: string },
-): string {
+export function botsBlock(state: BotsState, refreshHref: string): string {
   if (state === 'unavailable')
-    return `<p class="hint">Сервер ботов сейчас не отвечает — QR-коды появятся, когда он вернётся. <a href="${esc(opts.refreshHref)}">Обновить</a></p>`;
+    return `<p class="hint">Сервер ботов сейчас не отвечает — QR-коды появятся, когда он вернётся. <a href="${esc(refreshHref)}">Обновить</a></p>`;
   if (!state.channels.length)
     return `<p class="hint">Боты в мессенджерах ещё не настроены на сервере.</p>`;
   const linked = new Map<string, string[]>();
@@ -88,16 +85,16 @@ export function botsBlock(
 ${state.links
   .map(
     (l) =>
-      `      <li><span><b>${esc(l.title)}</b> · ${esc(l.name ?? 'чат')} · с ${esc(date(l.linkedAt))}</span>${opts.unlink ? `<button class="link" type="button" data-act="bot-unlink" data-channel="${esc(l.channel)}" data-chat="${esc(l.chatId)}">Отвязать</button>` : ''}</li>`,
+      `      <li><span><b>${esc(l.title)}</b> · ${esc(l.name ?? 'чат')} · с ${esc(date(l.linkedAt))}</span><button class="link" type="button" data-act="bot-unlink" data-channel="${esc(l.channel)}" data-chat="${esc(l.chatId)}">Отвязать</button></li>`,
   )
   .join('\n')}
-    </ul>${!opts.unlink && opts.agentsHref ? `<p class="hint">Отвязать чат — <a href="${esc(opts.agentsHref)}">на странице агентов</a>.</p>` : ''}`
+    </ul>`
     : '';
   return `<div class="bots">
   <div class="bots__grid">
     ${cards.join('\n    ')}
   </div>
-  <p class="hint">Наведите камеру телефона на QR-код или нажмите «Открыть» на телефоне — откроется бот Goldfish; затем ${esc(state.channels.map((c) => `в ${c.title} ${ACTION[c.id] ?? 'откройте бота'}`).join(', '))}. ${state.expiresAt ? `Коды одноразовые и действуют до ${esc(time(state.expiresAt))} — <a href="${esc(opts.refreshHref)}">обновить</a>.` : ''}</p>
+  <p class="hint">Наведите камеру телефона на QR-код или нажмите «Открыть» на телефоне — откроется бот Goldfish; затем ${esc(state.channels.map((c) => `в ${c.title} ${ACTION[c.id] ?? 'откройте бота'}`).join(', '))}. ${state.expiresAt ? `Коды одноразовые и действуют до ${esc(time(state.expiresAt))} — <a href="${esc(refreshHref)}">обновить</a>.` : ''}</p>
   ${links}
 </div>`;
 }
