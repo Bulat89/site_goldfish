@@ -5,6 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { PUBLIC_URL, sessionUser, signIn, startApp, testConfig, type TestApp } from './helpers.js';
 
 const origin = { origin: PUBLIC_URL };
+/** What a connection key carries for the extension. */
+const keyOf = (key: string) =>
+  JSON.parse(Buffer.from(key.replace(/^gfk_/, ''), 'base64url').toString()) as {
+    server: string;
+    token: string;
+  };
 
 let t: TestApp;
 afterEach(async () => {
@@ -85,15 +91,18 @@ describe('Yandex ID sign-in', () => {
     expect(cookie).toMatchObject({ httpOnly: true, secure: true, path: '/', sameSite: 'Lax' });
   });
 
-  it('signs the user in and shows the account with the server address', async () => {
+  it('signs the user in and greets them with the setup, without the server address', async () => {
     t = await startApp();
     const cookies = await signIn(t);
     expect(Object.keys(cookies)).toEqual(['__Host-gf_session']);
-    const page = await t.app.inject({ url: '/', cookies });
+    const home = await t.app.inject({ url: '/', cookies });
+    expect(home.statusCode).toBe(302);
+    expect(home.headers.location).toBe('/start');
+    const page = await t.app.inject({ url: '/start', cookies });
     expect(page.body).toContain('Здравствуйте, Иван!');
     expect(page.body).toContain('Скачать расширение');
-    expect(page.body).toContain('value="https://agent.test"');
-    expect(page.body).toContain('Получить токен');
+    expect(page.body).toContain('Получить ключ подключения');
+    expect(page.body).not.toContain('agent.test');
     expect(page.body).toContain('avatars.yandex.net/get-yapic/131652443%2Fabc-123/islands-68');
     expect(page.headers['cache-control']).toContain('no-store');
     // The Yandex access token is used once and not kept.
@@ -109,7 +118,7 @@ describe('Yandex ID sign-in', () => {
     await signIn(t);
     t.fakes.profile = { ...t.fakes.profile, real_name: 'Иван Сидоров', is_avatar_empty: true };
     const cookies = await signIn(t);
-    const page = await t.app.inject({ url: '/', cookies });
+    const page = await t.app.inject({ url: '/start', cookies });
     expect(page.body).toContain('Иван Сидоров');
     expect(page.body).toContain('avatar--empty');
   });
@@ -185,14 +194,16 @@ describe('device token', () => {
     expect(t.fakes.tokens.size).toBe(0);
   });
 
-  it('creates the Goldfish client and user, then issues a token shown once', async () => {
+  it('creates the Goldfish client and user, then issues a key shown once', async () => {
     t = await startApp();
     const cookies = await signIn(t);
     const res = await t.app.inject({ method: 'POST', url: '/api/token', cookies, headers: origin });
     expect(res.statusCode).toBe(200);
     expect(res.headers['cache-control']).toBe('no-store');
     const body = res.json();
-    expect(body).toMatchObject({ token: 'gf_secret_tok_2', serverUrl: 'https://agent.test' });
+    // The key carries the server's address with the token: the page never shows the address.
+    expect(Object.keys(body).sort()).toEqual(['issuedAt', 'key']);
+    expect(keyOf(body.key)).toEqual({ server: 'https://agent.test', token: 'gf_secret_tok_2' });
     expect(t.fakes.clients).toEqual([{ id: 'cl_1', name: 'Сайт' }]);
     expect(t.fakes.users.get('cl_1/yandex:1000001')).toEqual({
       displayName: 'Иван Петров <ivan.petrov@yandex.ru>',
@@ -202,10 +213,11 @@ describe('device token', () => {
       userId: 'yandex:1000001',
     });
 
-    const page = await t.app.inject({ url: '/', cookies });
-    expect(page.body).toContain('Выпустить новый токен');
-    expect(page.body).toContain('Токен выдан');
+    const page = await t.app.inject({ url: '/start?step=1', cookies });
+    expect(page.body).toContain('Выпустить новый ключ');
+    expect(page.body).toContain('Ключ выдан');
     expect(page.body).not.toContain('gf_secret');
+    expect(page.body).not.toContain('gfk_');
   });
 
   it('revokes the previous token when a new one is issued', async () => {
@@ -217,8 +229,8 @@ describe('device token', () => {
     const second = (
       await t.app.inject({ method: 'POST', url: '/api/token', cookies, headers: origin })
     ).json();
-    expect(first.token).not.toBe(second.token);
-    expect(t.fakes.activeTokens()).toEqual([second.token.replace('gf_secret_', '')]);
+    expect(first.key).not.toBe(second.key);
+    expect(t.fakes.activeTokens()).toEqual([keyOf(second.key).token.replace('gf_secret_', '')]);
     // The user already exists in Goldfish: only the display name is refreshed.
     expect(t.fakes.calls.filter((c) => c.startsWith('PATCH'))).toHaveLength(1);
   });
@@ -316,7 +328,7 @@ describe('extension download', () => {
     t.fakes.extensionZip = null;
     const cookies = await signIn(t);
     const res = await t.app.inject({ url: '/download', cookies });
-    expect(res.headers.location).toBe('/?download=unavailable');
+    expect(res.headers.location).toBe('/start?step=1&download=unavailable');
     expect((await t.app.inject({ url: res.headers.location, cookies })).body).toContain(
       'Пакет расширения сейчас недоступен',
     );

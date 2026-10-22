@@ -1,9 +1,8 @@
 import type { AccessState } from '../access.js';
 import type { AssetUrls } from '../static.js';
 import type { UserRecord } from '../store/types.js';
-import { botsBlock, type BotsState } from './bots.js';
 
-export type Notice = 'login_denied' | 'login_expired' | 'login_error' | 'download_unavailable';
+export type Notice = 'login_denied' | 'login_expired' | 'login_error';
 
 export interface View {
   assets: AssetUrls;
@@ -16,8 +15,6 @@ interface PageState extends View {
   user: UserRecord | null;
   access: AccessState | null;
   notice: Notice | null;
-  /** The bots in the messengers: undefined when the site has no bots server (BOTS_URL). */
-  bots?: BotsState | undefined;
 }
 
 export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -55,7 +52,6 @@ const NOTICE_TEXT: Record<Notice, string> = {
   login_denied: 'Вход отменён. Чтобы получить доступ, разрешите сайту доступ к профилю Яндекс ID.',
   login_expired: 'Ссылка для входа устарела. Нажмите «Войти» ещё раз.',
   login_error: 'Не удалось войти через Яндекс ID. Попробуйте ещё раз через минуту.',
-  download_unavailable: 'Пакет расширения сейчас недоступен. Попробуйте позже или напишите нам.',
 };
 
 const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M21.8 14.7 30.4 3.9v24.2l-8.6-10.8z" fill="#f78c28"/><ellipse cx="14" cy="16" rx="10.9" ry="7.7" fill="#e8590c"/><circle cx="8.6" cy="14.4" r="2" fill="#fff"/></svg>`;
@@ -110,7 +106,7 @@ export function header(user: UserRecord | null): string {
   return `<header class="top wrap">
   <a class="brand" href="/">${LOGO}<span>Goldfish</span></a>
   <nav class="top__nav" aria-label="Разделы">
-    ${user ? `<a href="/agents">Агенты</a>` : ''}
+    ${user ? `<a href="/start">Настройка</a><a href="/agents">Агенты</a>` : ''}
     <a href="/help">Инструкция</a>
   </nav>
   ${right}
@@ -320,90 +316,28 @@ ${WAVES}
 <section class="how wrap" aria-labelledby="start-title">
   <h2 id="start-title" class="section-title">Как начать</h2>
   <ol class="steps">
-    <li><b>Войдите</b> через Яндекс ID и установите расширение в браузер, где открыты ваши PMS и кабинеты площадок.</li>
-    <li><b>Заполните эталон объекта</b>: пришлите ссылку на карточку на Авито или Яндекс Путешествиях — агент перенесёт номера, цены, правила и удобства, вы проверите и примените.</li>
-    <li><b>Включите агентов</b> одной кнопкой и привяжите Telegram — первая сводка придёт утром.</li>
+    <li><b>Войдите и установите расширение</b> в браузер, где открыты ваши PMS и кабинеты площадок, — ключ подключения сайт выдаст сам.</li>
+    <li><b>Дайте ссылки</b> на объявления и кабинет CRM: по эталонному объявлению агент заполнит эталон объекта. Привяжите бота по QR-коду.</li>
+    <li><b>Соберите команду</b>: сначала агенты только изучают ваши кабинеты и запоминают дорогу, ничего не меняя. Работу разрешаете вы.</li>
   </ol>
 </section>`;
 }
 
-/** Step 4 of the cabinet: QR codes that link the owner's Telegram, MAX or WhatsApp. */
-function botsCard(bots: BotsState): string {
-  return `<article class="card card--wide" id="bots" aria-labelledby="bots-title">
-    <div class="card__head"><h2 id="bots-title"><span class="num">4</span>Управляйте агентами из мессенджера</h2>${helpLink('bots', 'Что умеет бот?')}</div>
-    <p>Привяжите Telegram, MAX или WhatsApp: согласовывайте решения агентов, поручайте им задачи, включайте и выключайте агентов прямо из чата. Туда же придут утренняя сводка и срочное.</p>
-    ${botsBlock(bots, { unlink: false, refreshHref: '/#bots', agentsHref: agentsHref('telegram-title') })}
-  </article>`;
-}
-
-function cabinet(
-  user: UserRecord,
-  access: AccessState,
-  goldfishUrl: string,
-  bots?: BotsState,
-): string {
+/** A signed-in user without access: why. The others go to the setup wizard or their agents. */
+function noAccess(user: UserRecord, access: Extract<AccessState, { allowed: false }>): string {
   const first = (user.name ?? user.login ?? '').split(/\s+/)[0] ?? '';
-  if (!access.allowed)
-    return `<section class="hero hero--user wrap">
+  return `<section class="hero hero--user wrap">
   <div class="hero__text">
     <p class="eyebrow eyebrow--warn">Доступа нет</p>
     <h1>Здравствуйте${first ? `, ${esc(first)}` : ''}!</h1>
     <p class="lead">${esc(access.reason)}</p>
   </div>
 </section>`;
-  const issued = user.tokenIssuedAt
-    ? `<p class="hint" id="token-hint">Токен выдан ${esc(new Date(user.tokenIssuedAt).toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow' }))}. Потеряли — выпустите новый: старый сразу перестанет работать.</p>`
-    : `<p class="hint" id="token-hint">Токен показывается один раз — сразу вставьте его в расширение.</p>`;
-  return `<section class="hero hero--user wrap">
-  <div class="hero__text">
-    <p class="eyebrow eyebrow--ok"><span class="dot"></span>${esc(access.label)} · доступ открыт</p>
-    <h1>Здравствуйте${first ? `, ${esc(first)}` : ''}!</h1>
-    <p class="lead">${bots ? 'Четыре шага' : 'Три шага'} — и команда агентов работает на ваш объект.</p>
-  </div>
-</section>
-<section class="cabinet wrap" aria-label="Установка и подключение">
-  <article class="card" id="install">
-    <h2><span class="num">1</span>Установите расширение</h2>
-    <a class="btn btn--accent" href="/download">Скачать расширение</a>
-    <ol class="list">
-      <li>Распакуйте zip в постоянную папку — не удаляйте её после установки.</li>
-      <li>Откройте <code>chrome://extensions</code> <button class="link" type="button" data-copy="chrome://extensions">скопировать</button> и включите «Режим разработчика».</li>
-      <li>Нажмите «Загрузить распакованное» и выберите эту папку.</li>
-      <li>Закрепите значок Goldfish на панели и нажмите на него — откроется боковая панель.</li>
-    </ol>
-    <p class="hint">Нужен Chrome 116+ или другой браузер на Chromium: Яндекс Браузер, Edge. ${helpLink('install', 'Подробная инструкция')}</p>
-  </article>
-  <article class="card" id="connect">
-    <h2><span class="num">2</span>Подключите к серверу</h2>
-    <p>Вставьте в боковой панели расширения:</p>
-    <label class="field">
-      <span class="field__label">Адрес сервера</span>
-      <span class="field__row"><input id="server-url" readonly value="${esc(goldfishUrl)}"><button class="btn btn--ghost btn--sm" type="button" data-copy-from="server-url">Копировать</button></span>
-    </label>
-    <div class="field">
-      <span class="field__label">Токен</span>
-      <div class="field__row" id="token-row" hidden><input id="token" readonly aria-label="Токен" spellcheck="false"><button class="btn btn--ghost btn--sm" type="button" data-copy-from="token">Копировать</button></div>
-      <button class="btn ${user.tokenIssuedAt ? 'btn--ghost' : 'btn--accent'}" type="button" id="issue-token" data-has-token="${user.tokenIssuedAt ? '1' : ''}">${user.tokenIssuedAt ? 'Выпустить новый токен' : 'Получить токен'}</button>
-      <p class="error" id="token-error" role="alert" hidden></p>
-      ${issued}
-    </div>
-    <p class="hint">Нажмите «Сохранить» — индикатор «Подключено» значит, что агенты могут работать в вашем браузере. ${helpLink('indicator', 'Что значат другие надписи?')}</p>
-  </article>
-  <article class="card card--wide">
-    <h2><span class="num">3</span>Настройте агентов объекта</h2>
-    <p>Заполните эталон объекта (можно по ссылке на карточку Авито или Яндекс Путешествий), включите агентов и привяжите ${bots ? 'мессенджер' : 'Telegram'} — управляющий пришлёт сводку и согласования.</p>
-    <div class="row">
-      <a class="btn btn--accent" href="/agents">Перейти к агентам</a>
-      <a class="btn btn--ghost" href="/help">Инструкция по всем сценариям</a>
-    </div>
-  </article>
-  ${bots ? botsCard(bots) : ''}
-</section>`;
 }
 
 export function renderPage(s: PageState): string {
   const main =
-    s.user && s.access ? cabinet(s.user, s.access, s.goldfishUrl, s.bots) + TEAM : guest();
+    s.user && s.access && !s.access.allowed ? noAccess(s.user, s.access) + TEAM : guest();
   return layout(
     s,
     'Goldfish — агенты для гостевого дома и отеля',

@@ -26,4 +26,12 @@ create table sessions (
 create index sessions_expires_idx on sessions (expires_at);
 `,
   },
+  {
+    version: 2,
+    // Users who already got a token went through the old cabinet: the wizard does not greet them.
+    sql: `
+alter table users add column onboarded_at timestamptz;
+update users set onboarded_at = token_issued_at where token_issued_at is not null;
+`,
+  },
 ];

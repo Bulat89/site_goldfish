@@ -13,6 +13,11 @@ export interface UserRecord {
   tokenId: string | null;
   tokenIssuedAt: string | null;
   lastDownloadAt: string | null;
+  /**
+   * When the owner finished the setup wizard (/start) and the agents began to study: until then
+   * the site greets them with the wizard.
+   */
+  onboardedAt: string | null;
 }
 
 export interface YandexProfileInput {
@@ -29,6 +34,7 @@ export interface Store {
   getUser(id: string): Promise<UserRecord | null>;
   setToken(userId: string, tokenId: string): Promise<UserRecord>;
   markDownload(userId: string): Promise<void>;
+  markOnboarded(userId: string): Promise<UserRecord>;
 
   /** Sessions are stored by the hash of the cookie value. */
   createSession(idHash: string, userId: string, expiresAt: Date): Promise<void>;

@@ -29,8 +29,8 @@ describe('agents page', () => {
   it("shows the owner's team, rights, approvals, numbers and the reference from Goldfish", async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    const cabinet = await t.app.inject({ url: '/', cookies });
-    expect(cabinet.body).toContain('href="/agents"');
+    const setup = await t.app.inject({ url: '/start', cookies });
+    expect(setup.body).toContain('href="/agents"');
     const res = await t.app.inject({ url: '/agents', cookies });
     expect(res.statusCode).toBe(200);
     expect(res.headers['cache-control']).toContain('no-store');

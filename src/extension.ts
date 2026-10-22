@@ -14,6 +14,15 @@ export interface ExtensionPackage {
   body: Readable;
 }
 
+/**
+ * «Ключ подключения» for the side panel of the extension: the address of the Goldfish server and
+ * the device token in one value (`gfk_` + base64url of the JSON), so the owner pastes one thing
+ * and never sees the address. The extension takes it apart (packages/extension, connectionKey).
+ */
+export function connectionKey(serverUrl: string, token: string): string {
+  return `gfk_${Buffer.from(JSON.stringify({ server: serverUrl, token })).toString('base64url')}`;
+}
+
 const safeName = (name: string | undefined) =>
   name && SAFE_NAME.test(name) ? name : FALLBACK_NAME;
 

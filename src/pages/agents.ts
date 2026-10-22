@@ -27,6 +27,8 @@ export interface HotelView {
     autonomy?: number;
     autonomyLevels?: AutonomyLevel[];
     wave: number;
+    /** «Изучение»: the agents only read and learn the way; older servers do not send it. */
+    study?: { since: string } | null;
     pause: { until: string; reason: string } | null;
     owner: { quietFrom: string; quietTo: string; urgentPerDay: number; summaryTime: string };
     limits: { reviewAutoMinStars: number; sharpChangePercent: number };
@@ -174,7 +176,25 @@ export interface AgentsState extends View {
   competitorSearch?: CompetitorSearchView | null;
   /** The bots in the messengers: undefined when the site has no bots server (BOTS_URL). */
   bots?: BotsState | undefined;
+  /** «Изучение» with how it goes by system; null — an older Goldfish without it. */
+  study?: StudyView | null;
   error: string | null;
+}
+
+/** «Изучение» (GET …/hotel/study): the agents go through the cabinets and change nothing. */
+export interface StudyView {
+  on: boolean;
+  since: string | null;
+  items: Array<{
+    system: string;
+    title: string;
+    status: 'running' | 'waiting_user' | 'done' | 'failed';
+    outcome: string | null;
+    taskId: string | null;
+    startedAt: string;
+  }>;
+  /** Systems with an address to study. */
+  targets: Array<{ system: string; title: string }>;
 }
 
 /** «Поиск объявлений на площадках» (GET …/hotel/listings). */
@@ -339,7 +359,7 @@ const day = (ymd: string) => {
   const [y, m, d] = ymd.split('-');
   return y && m && d ? `${d}.${m}.${y}` : ymd;
 };
-const icon = (agent: string) => ICONS[AGENT_ICONS[agent] ?? 'manager'];
+export const icon = (agent: string) => ICONS[AGENT_ICONS[agent] ?? 'manager'];
 const dot = (l: Level) => `<span class="lvl lvl--${l}" aria-hidden="true"></span>`;
 /** «1 обязанность», «3 обязанности», «9 обязанностей». */
 const duties = (n: number) => {
@@ -359,7 +379,7 @@ const duties = (n: number) => {
 // ---------------------------------------------------------------- the top of the page
 
 /** Whether a chat gets the manager's messages: a bot of the bots server or the Telegram of Goldfish. */
-function messengerLinked(h: HotelView, bots: BotsState | undefined): boolean {
+export function messengerLinked(h: HotelView, bots: BotsState | undefined): boolean {
   return h.telegramLinked || (!!bots && bots !== 'unavailable' && bots.links.length > 0);
 }
 
@@ -375,6 +395,10 @@ export function statusStrip(s: Pick<AgentsState, 'hotel' | 'desk' | 'bots'>): st
   const { status } = s.desk;
   const on = set.agents.filter((a) => a.enabled).length;
   const items: string[] = [];
+  if (set.study)
+    items.push(
+      `<a class="status status--study" href="#study-title"><span class="status__dot" aria-hidden="true"></span>Изучение: агенты только читают</a>`,
+    );
   items.push(
     on
       ? `<a class="status status--ok" href="${agentsHref('team-title')}"><span class="status__dot" aria-hidden="true"></span>Работают ${on} из ${set.agents.length} агентов</a>`
@@ -687,6 +711,67 @@ export function todayPanel(s: Pick<AgentsState, 'hotel' | 'desk' | 'bots'>): str
   </section>`;
 }
 
+// ---------------------------------------------------------------- «Изучение»
+
+const STUDY_STATE: Record<StudyView['items'][number]['status'], { mark: string; text: string }> = {
+  running: { mark: '…', text: 'изучает' },
+  waiting_user: {
+    mark: '!',
+    text: 'ждёт вас: войдите в кабинет в окне агента или ответьте ему в боковой панели',
+  },
+  done: { mark: '✓', text: 'изучено' },
+  failed: { mark: '×', text: 'не получилось' },
+};
+
+/** What app.js compares while it polls the study: a change reloads the page. */
+export function studyPollState(st: StudyView): string {
+  return JSON.stringify(st.items.map((x) => [x.system, x.status]));
+}
+
+/**
+ * «Агенты изучают ваши кабинеты»: after the setup the agents only read — each cabinet and listing
+ * with how its study goes. Nothing changes until the owner ends it here; then the agents work by
+ * their rights and the autonomy level, which the confirmation names.
+ */
+function studyCard(h: HotelView, st: StudyView | null | undefined): string {
+  if (!st?.on) return '';
+  const items = new Map(st.items.map((x) => [x.system, x]));
+  const rows = [
+    ...st.targets.map((t) => ({ title: t.title, item: items.get(t.system) })),
+    ...st.items
+      .filter((x) => !st.targets.some((t) => t.system === x.system))
+      .map((x) => ({ title: x.title, item: x })),
+  ];
+  const done = rows.filter((r) => r.item?.status === 'done').length;
+  const busy = st.items.some((x) => x.status === 'running' || x.status === 'waiting_user');
+  const list = rows.length
+    ? `<ul class="study__list">${rows
+        .map(({ title, item }) => {
+          const state = item ? STUDY_STATE[item.status] : { mark: '·', text: 'ещё не изучалось' };
+          const why = item?.status === 'failed' && item.outcome ? `: ${item.outcome}` : '';
+          return `<li class="study__item study__item--${item?.status ?? 'new'}"><span class="study__mark" aria-hidden="true">${state.mark}</span><span><b>${esc(title)}</b><span class="hint">${esc(state.text + why)}</span></span></li>`;
+        })
+        .join('')}</ul>`
+    : `<p class="hint">Изучать пока нечего: внесите ссылки на объявления и кабинет CRM на <a href="/start?step=2">шагах настройки</a>.</p>`;
+  const level = autonomyOf(h);
+  const confirm = [
+    'Закончить изучение и разрешить агентам работать?',
+    level
+      ? `Дальше — по правам обязанностей и уровню автономности ${level.level} «${level.title}»:\n${level.rules.map((r) => `• ${r}`).join('\n')}`
+      : 'Дальше агенты работают по правам своих обязанностей.',
+  ].join('\n\n');
+  return `<section class="card study" aria-labelledby="study-title"${busy ? ` data-study-poll="${esc(studyPollState(st))}"` : ''}>
+    <div class="card__head"><h2 id="study-title">Агенты изучают ваши кабинеты</h2>${helpLink('study', 'Что это?')}</div>
+    <p>Агенты открывают ваши объявления и кабинет CRM, проходят по разделам и запоминают дорогу к броням, ценам, сообщениям и отзывам — строят маршруты. <b>Ничего не меняют</b>: правки карточек, цены и ответы гостям сейчас запрещены и даже не предлагаются.</p>
+    ${list}
+    <p class="hint">Изучено ${done} из ${rows.length}. Агенты работают в вашем браузере — держите его открытым${busy ? '; страница обновится сама' : ''}.</p>
+    <div class="row">
+      <button class="btn btn--accent btn--sm" type="button" data-act="study-end" data-confirm="${esc(confirm)}">Закончить изучение — разрешить работу</button>
+      <button class="btn btn--ghost btn--sm" type="button" data-act="study-start">Изучить ещё раз</button>
+    </div>
+  </section>`;
+}
+
 // ---------------------------------------------------------------- «Команда»
 
 /** What the owner is asked before a change of the wave: which duties switch on or off. */
@@ -885,7 +970,7 @@ ${set.agents.map((a) => agentCard(a, set.wave)).join('\n')}
 }
 
 /** The agent asks the owner before running a duty that is off; without an answer nothing runs. */
-function permissionDialog(): string {
+export function permissionDialog(): string {
   return `<dialog class="permission" data-permission aria-labelledby="permission-title">
   <h2 id="permission-title">Нужно ваше разрешение</h2>
   <p class="permission__text" data-permission-text></p>
@@ -1099,7 +1184,7 @@ ${c.candidates.map(item).join('\n')}
  * the agent reads it, the page waits (app.js polls); a ready draft shows the found fields next
  * to the current ones, each with a checkbox. Nothing changes until the owner applies.
  */
-function importBlock(imp: ProfileImportView | null | undefined): string {
+export function importBlock(imp: ProfileImportView | null | undefined): string {
   const where = imp?.platform ? ` на ${esc(imp.platform)}` : '';
   if (imp?.status === 'reading')
     return `<div class="import import--wait" data-import-poll="${esc(imp.id)}" role="status">
@@ -1471,7 +1556,7 @@ function ownerForm(h: HotelView): string {
 </form>`;
 }
 
-function telegramBlock(h: HotelView): string {
+export function telegramBlock(h: HotelView): string {
   if (h.telegramBot === false)
     return `<p class="hint">Telegram-бот ещё не настроен на сервере. Пока сообщения управляющего — на вкладке «Сегодня» и в расширении.</p>`;
   return `<div class="tg-link${h.telegramLinked ? ' tg-link--on' : ''}">
@@ -1495,7 +1580,7 @@ function hookBlock(goldfishUrl: string): string {
 // ---------------------------------------------------------------- the page
 
 /** Messages after a change: fixed at the bottom of the screen, so the page does not jump. */
-function toasts(): string {
+export function toasts(): string {
   return `<div class="toasts">
   <div class="toast toast--error" data-page-error role="alert" hidden><span data-toast-text></span><button class="toast__close" type="button" data-toast-close aria-label="Скрыть">×</button></div>
   <div class="toast" data-page-status role="status" hidden><span data-toast-text></span><button class="toast__close" type="button" data-toast-close aria-label="Скрыть">×</button></div>
@@ -1518,7 +1603,7 @@ export function renderAgents(s: AgentsState): string {
 <main class="wrap empty">
   <h1>Агенты объекта</h1>
   <p class="notice" role="status">${esc(s.error ?? 'Сервер агентов сейчас недоступен — попробуйте через минуту.')}</p>
-  <p class="lead"><a href="/">В кабинет</a></p>
+  <p class="lead"><a href="/start">К настройке</a></p>
 </main>`,
     );
   }
@@ -1570,12 +1655,13 @@ export function renderAgents(s: AgentsState): string {
 <main class="wrap agents" data-agents>
   <section class="hero hero--user hero--agents">
     <div class="hero__text">
-      <p class="eyebrow"><a href="/">Кабинет</a> · агенты объекта</p>
+      <p class="eyebrow"><a href="/start">Настройка</a> · агенты объекта</p>
       <h1>${name ? esc(name) : 'Ваш объект'}</h1>
       ${statusStrip(s)}
     </div>
   </section>
   ${s.error ? `<p class="notice" role="status">${esc(s.error)}</p>` : ''}
+  ${studyCard(h, s.study)}
   ${tabsNav(tab, s.desk.status)}
   ${panel('today', tab, today, s.desk.rev)}
   ${panel('team', tab, team)}

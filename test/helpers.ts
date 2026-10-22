@@ -253,6 +253,18 @@ export class Fakes {
   listings: unknown = null;
   competitorSearch: unknown = null;
   prices: unknown = PRICE_BOARD;
+  /** GET /admin/users/:c/:u — the owner's extension; null — the user is not on the server. */
+  extension: { online: boolean; lastBrowserSeenAt: string | null } | null = {
+    online: false,
+    lastBrowserSeenAt: null,
+  };
+  /** GET …/hotel/study; null — an older Goldfish without it (404). */
+  study: {
+    on: boolean;
+    since: string | null;
+    items: Array<Record<string, unknown>>;
+    targets: Array<{ system: string; title: string }>;
+  } | null = { on: false, since: null, items: [], targets: [] };
   // Yandex
   profile: YandexProfile = {
     id: '1000001',
@@ -322,8 +334,11 @@ export class Fakes {
       owner: { quietFrom: '22:00', quietTo: '09:00', urgentPerDay: 5, summaryTime: '09:00' },
       limits: { reviewAutoMinStars: 4, sharpChangePercent: 40 },
       platforms: [
+        { id: 'bnovo', title: 'Bnovo', category: 'pms', mode: 'full' },
+        { id: 'sheet', title: 'Шахматка в таблице', category: 'sheet', mode: 'full' },
         { id: 'ostrovok', title: 'Островок', category: 'guest', mode: 'full' },
         { id: 'avito', title: 'Авито', category: 'guest', mode: 'full' },
+        { id: 'yandex_maps', title: 'Яндекс Карты', category: 'maps', mode: 'full' },
       ],
       agents: [
         {
@@ -601,6 +616,10 @@ export class Fakes {
       this.users.set(key, { displayName: body.displayName });
       return json({ userId: body.userId }, 201);
     }
+    if (method === 'GET' && (m = /^\/admin\/users\/([^/]+)\/([^/]+)$/.exec(path))) {
+      if (!this.extension) return json({ error: 'not_found' }, 404);
+      return json({ userId: decodeURIComponent(m[2]!), ...this.extension });
+    }
     if (method === 'PATCH' && (m = /^\/admin\/users\/([^/]+)\/([^/]+)$/.exec(path))) {
       const key = `${m[1]}/${decodeURIComponent(m[2]!)}`;
       const user = this.users.get(key);
@@ -677,8 +696,18 @@ export class Fakes {
       if (method === 'POST' && sub === '/listings/lst_1/ostrovok')
         return json({ ...LISTINGS_READY, mine: body.mine });
       if (method === 'POST' && sub === '/listings/manual') {
-        if (typeof body.url !== 'string' || !body.url.startsWith('https://www.avito.ru/'))
-          return json({ error: 'bad_request', message: 'это ссылка не на Авито' }, 400);
+        const where: Record<string, [string, string]> = {
+          avito: ['https://www.avito.ru/', 'Авито'],
+          ostrovok: ['https://ostrovok.ru/', 'Островок'],
+          yandex_maps: ['https://yandex.ru/maps/', 'Яндекс Карты'],
+        };
+        const [prefix, title] = where[body.platform] ?? ['', body.platform];
+        if (typeof body.url !== 'string' || !prefix || !body.url.startsWith(prefix))
+          return json({ error: 'bad_request', message: `это ссылка не на ${title}` }, 400);
+        const systems = (this.hotel.profile.systems ?? []) as Array<{ id: string }>;
+        this.hotel.profile.systems = systems.some((x) => x.id === body.platform)
+          ? systems.map((x) => (x.id === body.platform ? { ...x, listingUrl: body.url } : x))
+          : [...systems, { id: body.platform, listingUrl: body.url }];
         return json({
           ...LISTINGS_READY,
           platforms: LISTINGS_READY.platforms.map((x) =>
@@ -700,7 +729,46 @@ export class Fakes {
             { error: 'bad_request', message: 'пришлите ссылку на карточку или её текст' },
             400,
           );
-        return json({ ...IMPORT_READY, status: 'reading', fields: [] }, 201);
+        this.profileImport = {
+          ...IMPORT_READY,
+          status: 'reading',
+          fields: [],
+          url: body.url ?? null,
+        };
+        return json(this.profileImport, 201);
+      }
+      if (method === 'GET' && sub === '/study')
+        return this.study ? json(this.study) : json({ error: 'not_found' }, 404);
+      if (method === 'POST' && sub === '/study') {
+        if (!this.study) return json({ error: 'not_found' }, 404);
+        if (body.on === false) {
+          this.study = { ...this.study, on: false };
+          return json(this.study);
+        }
+        if (!this.extension?.lastBrowserSeenAt)
+          return json(
+            {
+              error: 'bad_request',
+              message: 'расширение Goldfish ещё ни разу не подключалось',
+            },
+            400,
+          );
+        this.study = {
+          on: true,
+          since: '2026-10-22T09:00:00.000Z',
+          targets: [{ system: 'ostrovok', title: 'Островок' }],
+          items: [
+            {
+              system: 'ostrovok',
+              title: 'Островок',
+              status: 'running',
+              outcome: null,
+              taskId: 'task_9',
+              startedAt: '2026-10-22T09:00:00.000Z',
+            },
+          ],
+        };
+        return json(this.study, 201);
       }
       if (method === 'GET' && sub === '/profile/import/imp_1') return json(IMPORT_READY);
       if (method === 'POST' && sub === '/profile/import/imp_1/apply')
@@ -737,6 +805,7 @@ export class Fakes {
         });
       if (method === 'PUT' && sub === '/profile') {
         if (!body.name) return json({ error: 'bad_request', message: 'name: обязательно' }, 400);
+        this.hotel.profile = body;
         return json(this.hotel);
       }
       return json({ error: 'not_found' }, 404);

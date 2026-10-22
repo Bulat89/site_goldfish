@@ -2,11 +2,12 @@ import cookie from '@fastify/cookie';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
+  type FastifyReply,
   type FastifyRequest,
 } from 'fastify';
 import { accessOf, goldfishUserId } from './access.js';
 import { isSecure } from './config.js';
-import { openExtension } from './extension.js';
+import { connectionKey, openExtension } from './extension.js';
 import { GoldfishError } from './goldfish/admin.js';
 import { renderHelp } from './pages/help.js';
 import {
@@ -32,8 +33,16 @@ import {
   type ProfileImportView,
   type ListingSearchView,
   type CompetitorSearchView,
+  type StudyView,
 } from './pages/agents.js';
 import type { BotsState } from './pages/bots.js';
+import {
+  SETUP_STEPS,
+  firstOpenStep,
+  renderSetup,
+  type SetupState,
+  type SetupStep,
+} from './pages/setup.js';
 import type { Services } from './services.js';
 import { registerStatic } from './static.js';
 import type { UserRecord } from './store/types.js';
@@ -128,18 +137,20 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     }
   };
 
+  // A guest gets the landing; the owner — the setup wizard until it is finished, then the agents.
   app.get('/', async (req, reply) => {
     const user = await sessions.user(req);
-    const q = req.query as { login?: string; download?: string };
-    const notice: Notice | null =
-      (q.login && NOTICES[q.login]) ||
-      (q.download === 'unavailable' ? 'download_unavailable' : null);
+    const q = req.query as { login?: string };
+    const notice: Notice | null = (q.login && NOTICES[q.login]) || null;
     const access = user ? accessOf(user) : null;
-    const bots = user && access?.allowed ? await botsOf(user, req) : undefined;
+    if (user && access?.allowed)
+      return reply
+        .header('cache-control', 'no-store')
+        .redirect(user.onboardedAt ? '/agents' : '/start');
     return reply
       .type('text/html; charset=utf-8')
       .header('cache-control', 'private, no-store')
-      .send(renderPage({ ...view, user, access, notice, bots }));
+      .send(renderPage({ ...view, user, access, notice }));
   });
 
   // The guide is public: it also answers «how does it work» before signing in.
@@ -210,7 +221,7 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     } catch (err) {
       req.log.error({ err }, 'extension download failed');
     }
-    return reply.redirect('/?download=unavailable');
+    return reply.redirect('/start?step=1&download=unavailable');
   });
 
   app.post('/api/token', async (req, reply) => {
@@ -224,7 +235,8 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     try {
       const { token, user: updated } = await s.access.issueToken(user.id);
       req.log.info({ userId: user.id }, 'device token issued');
-      return { token, serverUrl: config.GOLDFISH_URL, issuedAt: updated.tokenIssuedAt };
+      // The server's address goes inside the key: the owner never types or sees it.
+      return { key: connectionKey(config.GOLDFISH_URL, token), issuedAt: updated.tokenIssuedAt };
     } catch (err) {
       req.log.error({ err }, 'device token not issued');
       return reply.code(502).send({
@@ -284,12 +296,13 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     };
     const bots = botsOf(user, req);
     try {
-      const [hotel, desk, profileImport, listings, competitorSearch] = await Promise.all([
+      const [hotel, desk, profileImport, listings, competitorSearch, study] = await Promise.all([
         s.goldfish.hotel<HotelView>(gf, 'GET', ''),
         s.goldfish.hotel<DeskView>(gf, 'GET', '/manager'),
         s.goldfish.hotel<ProfileImportView | null>(gf, 'GET', '/profile/import'),
         s.goldfish.hotel<ListingSearchView | null>(gf, 'GET', '/listings'),
         s.goldfish.hotel<CompetitorSearchView | null>(gf, 'GET', '/competitors'),
+        s.goldfish.hotel<StudyView>(gf, 'GET', '/study'),
       ]);
       if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
       state = {
@@ -300,6 +313,8 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
         // An older Goldfish without the searches answers 404: the blocks offer to start them.
         listings: listings.status === 200 ? listings.body : null,
         competitorSearch: competitorSearch.status === 200 ? competitorSearch.body : null,
+        // An older Goldfish without «Изучение» answers 404: the page goes without the card.
+        study: study.status === 200 ? study.body : null,
       };
     } catch (err) {
       // 2026-10-14 16:38: the deploy of Goldfish gave the page «unavailable» and the journal an error.
@@ -418,6 +433,11 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
   app.post(
     '/api/agents/telegram',
     proxy('POST', () => '/telegram/link'),
+  );
+  // «Изучение»: {on: true} — study the cabinets again, {on: false} — end it, the agents work.
+  app.post(
+    '/api/agents/study',
+    proxy('POST', () => '/study'),
   );
 
   // «Сегодня» asks for itself again while it is open: a decision taken in a messenger or in the
@@ -539,8 +559,8 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
     '/api/agents/prices/accept',
     proxy('POST', () => '/prices/accept'),
   );
-  // Polled by the page while a search runs (a read: the session is enough).
-  for (const what of ['listings', 'competitors'] as const)
+  // Polled by the page while a search or the study runs (a read: the session is enough).
+  for (const what of ['listings', 'competitors', 'study'] as const)
     app.get(`/api/agents/${what}`, async (req, reply) => {
       reply.header('cache-control', 'no-store');
       const user = await sessions.user(req);
@@ -560,6 +580,311 @@ export async function buildApp(s: Services): Promise<FastifyInstance> {
         return reply.code(502).send({ error: 'goldfish_unavailable' });
       }
     });
+
+  // ---------------------------------------------------------------- setup wizard
+
+  /** The site's own page, a signed-in user with access: the user, or null with the answer sent. */
+  const owner = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    change = true,
+  ): Promise<UserRecord | null> => {
+    reply.header('cache-control', 'no-store');
+    if (change && !sameOrigin(req)) {
+      void reply.code(403).send({ error: 'forbidden' });
+      return null;
+    }
+    const user = await sessions.user(req);
+    if (!user) {
+      void reply.code(401).send({ error: 'unauthorized', message: 'Войдите заново' });
+      return null;
+    }
+    const access = accessOf(user);
+    if (!access.allowed) {
+      void reply.code(403).send({ error: 'no_access', message: access.reason });
+      return null;
+    }
+    return user;
+  };
+  const refusal = (body: unknown, fallback: string) =>
+    (body as { message?: unknown } | null)?.message
+      ? String((body as { message: unknown }).message)
+      : fallback;
+  const unavailable = (reply: FastifyReply, req: FastifyRequest, err: unknown) => {
+    req.log.error({ err }, 'setup: goldfish unavailable');
+    return reply.code(502).send({
+      error: 'goldfish_unavailable',
+      message: 'Сервер агентов сейчас недоступен — попробуйте через минуту',
+    });
+  };
+
+  /**
+   * «Настройка»: the extension, the listings with the reference one, the CRM and the bot, the
+   * team. `?step=` opens a step; without it — the first one with something left to do.
+   */
+  app.get('/start', async (req, reply) => {
+    const user = await sessions.user(req);
+    if (!user) return reply.redirect('/auth/yandex');
+    if (!accessOf(user).allowed) return reply.redirect('/');
+    const q = req.query as { step?: string; download?: string };
+    const asked = SETUP_STEPS.find((n) => String(n) === q.step);
+    const gf = goldfishUserId(user);
+    const state: SetupState = {
+      ...view,
+      user,
+      step: asked ?? 1,
+      hotel: null,
+      profileImport: null,
+      extension: null,
+      study: null,
+      downloadFailed: q.download === 'unavailable',
+      error: null,
+    };
+    // One-time codes for the QR codes only where the bot is shown (or the step is not known yet).
+    const bots = botsOf(user, req, !asked || asked === 3);
+    try {
+      const [hotel, profileImport, extension, study] = await Promise.all([
+        s.goldfish.hotel<HotelView>(gf, 'GET', ''),
+        s.goldfish.hotel<ProfileImportView | null>(gf, 'GET', '/profile/import'),
+        s.goldfish.extensionState(gf),
+        s.goldfish.hotel<StudyView>(gf, 'GET', '/study'),
+      ]);
+      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
+      state.hotel = hotel.body;
+      state.profileImport = profileImport.status === 200 ? profileImport.body : null;
+      state.extension = extension;
+      state.study = study.status === 200 ? study.body : null;
+    } catch (err) {
+      if (restarting(err)) {
+        req.log.info({ status: err.status }, 'setup page: goldfish restarting, the page reloads');
+        reply.header('refresh', String(RELOAD_SECONDS));
+        state.error = RESTARTING_NOTICE;
+      } else {
+        req.log.error({ err }, 'setup page: goldfish unavailable');
+        state.error = 'Сервер агентов сейчас недоступен — попробуйте через минуту.';
+      }
+    }
+    state.bots = await bots;
+    if (!asked) state.step = firstOpenStep(state);
+    return reply
+      .type('text/html; charset=utf-8')
+      .header('cache-control', 'private, no-store')
+      .send(renderSetup(state));
+  });
+
+  // Step 1 asks while it waits for the extension (a read: the session is enough).
+  app.get('/api/onboarding/extension', async (req, reply) => {
+    const user = await owner(req, reply, false);
+    if (!user) return reply;
+    try {
+      const st = await s.goldfish.extensionState(goldfishUserId(user));
+      return {
+        connected: !!st?.lastSeenAt,
+        online: !!st?.online,
+        lastSeenAt: st?.lastSeenAt ?? null,
+      };
+    } catch (err) {
+      if (!restarting(err)) req.log.warn({ err }, 'setup: extension state unknown');
+      return reply.code(502).send({ error: 'goldfish_unavailable' });
+    }
+  });
+
+  /**
+   * Step 2: the owner's listings — each new address is registered on its platform (the server
+   * checks it is that platform's), a cleared one leaves the reference — and the reference listing,
+   * which the agent reads into a draft of the reference. What went through stays.
+   */
+  app.post('/api/onboarding/listings', async (req, reply) => {
+    const user = await owner(req, reply);
+    if (!user) return reply;
+    const body = (req.body ?? {}) as { listings?: unknown; reference?: unknown };
+    const listings = Array.isArray(body.listings) ? body.listings : null;
+    const reference = typeof body.reference === 'string' ? body.reference : null;
+    if (
+      !listings ||
+      listings.length > 30 ||
+      !listings.every(
+        (l): l is { platform: string; url: string } =>
+          !!l &&
+          typeof (l as { platform?: unknown }).platform === 'string' &&
+          typeof (l as { url?: unknown }).url === 'string' &&
+          (l as { platform: string }).platform.length <= 40 &&
+          (l as { url: string }).url.length <= 1000,
+      )
+    )
+      return reply.code(400).send({ error: 'bad_request', message: 'какие объявления сохранить?' });
+    const gf = goldfishUserId(user);
+    try {
+      const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
+      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
+      const title = new Map(hotel.body.settings.platforms.map((p) => [p.id, p.title]));
+      const systems = (hotel.body.profile.systems ?? []) as Array<
+        Record<string, unknown> & { id: string }
+      >;
+      const known = new Map(systems.map((x) => [x.id, String(x.listingUrl ?? '')]));
+      const errors: string[] = [];
+      for (const l of listings) {
+        const url = l.url.trim();
+        if (!url || url === known.get(l.platform)) continue;
+        const r = await s.goldfish.hotel(gf, 'POST', '/listings/manual', {
+          platform: l.platform,
+          url,
+        });
+        if (r.status !== 200)
+          errors.push(
+            `${title.get(l.platform) ?? l.platform}: ${refusal(r.body, 'не сохранилось')}`,
+          );
+      }
+      // A cleared field: the listing leaves the reference (a system with nothing else goes too).
+      const cleared = new Set(
+        listings.filter((l) => !l.url.trim() && known.get(l.platform)).map((l) => l.platform),
+      );
+      if (cleared.size) {
+        const fresh = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
+        const profile = fresh.body.profile;
+        const next = ((profile.systems ?? []) as Array<Record<string, unknown> & { id: string }>)
+          .map((x) => {
+            if (!cleared.has(x.id)) return x;
+            const { listingUrl: _gone, ...rest } = x;
+            return Object.keys(rest).length > 1 ? rest : null;
+          })
+          .filter((x) => x !== null);
+        const r = await s.goldfish.hotel(gf, 'PUT', '/profile', { ...profile, systems: next });
+        if (r.status !== 200) errors.push(refusal(r.body, 'не удалось убрать объявление'));
+      }
+      let importStarted = false;
+      if (reference) {
+        const url = listings.find((l) => l.platform === reference)?.url.trim();
+        if (!url) errors.push('Эталонное объявление: вставьте ссылку на него');
+        else {
+          const latest = await s.goldfish.hotel<ProfileImportView | null>(
+            gf,
+            'GET',
+            '/profile/import',
+          );
+          const same =
+            latest.status === 200 &&
+            latest.body?.url === url &&
+            latest.body.status !== 'failed' &&
+            latest.body.status !== 'discarded';
+          if (!same) {
+            const r = await s.goldfish.hotel<ProfileImportView>(gf, 'POST', '/profile/import', {
+              url,
+            });
+            if (r.status !== 201) errors.push(`Эталон: ${refusal(r.body, 'не получилось')}`);
+            else if (r.body.status === 'failed')
+              errors.push(`Эталон: ${r.body.error ?? 'не получилось прочитать объявление'}`);
+            else importStarted = true;
+          }
+        }
+      }
+      if (errors.length)
+        return reply
+          .code(400)
+          .send({ error: 'bad_request', message: errors.join('; '), importStarted });
+      req.log.info({ userId: user.id, importStarted }, 'setup: listings saved');
+      return { ok: true, importStarted };
+    } catch (err) {
+      return unavailable(reply, req, err);
+    }
+  });
+
+  /**
+   * Step 3: the cabinet of the owner's CRM (PMS or a chessboard table) — one: another chosen before
+   * leaves «Системы и площадки». «none» — no CRM, the bookings are kept by hand.
+   */
+  app.post('/api/onboarding/crm', async (req, reply) => {
+    const user = await owner(req, reply);
+    if (!user) return reply;
+    const body = (req.body ?? {}) as { system?: unknown; url?: unknown };
+    const system = typeof body.system === 'string' ? body.system : '';
+    const url = typeof body.url === 'string' ? body.url.trim() : '';
+    if (!system || system.length > 40)
+      return reply.code(400).send({ error: 'bad_request', message: 'Выберите вашу CRM' });
+    if (system !== 'none' && (!/^https?:\/\/\S+$/i.test(url) || url.length > 1000))
+      return reply.code(400).send({
+        error: 'bad_request',
+        message: 'Вставьте ссылку на личный кабинет целиком, с https://',
+      });
+    const gf = goldfishUserId(user);
+    try {
+      const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
+      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
+      const category = new Map(hotel.body.settings.platforms.map((p) => [p.id, p.category]));
+      const crm = (id: string) => ['pms', 'sheet'].includes(category.get(id) ?? '');
+      if (system !== 'none' && !crm(system))
+        return reply.code(400).send({ error: 'bad_request', message: 'Такой CRM нет в списке' });
+      const profile = hotel.body.profile;
+      const systems = (profile.systems ?? []) as Array<Record<string, unknown> & { id: string }>;
+      const was = systems.find((x) => x.id === system);
+      const next = [
+        ...systems.filter((x) => !crm(x.id)),
+        ...(system === 'none' ? [] : [{ ...was, id: system, url }]),
+      ];
+      const r = await s.goldfish.hotel(gf, 'PUT', '/profile', { ...profile, systems: next });
+      if (r.status !== 200)
+        return reply
+          .code(400)
+          .send({ error: 'bad_request', message: refusal(r.body, 'не сохранилось') });
+      req.log.info({ userId: user.id, system }, 'setup: crm saved');
+      return { ok: true };
+    } catch (err) {
+      return unavailable(reply, req, err);
+    }
+  });
+
+  /**
+   * Step 4: «Изучение» — the agents go through the cabinets and change nothing — then the team the
+   * owner chose and the autonomy level. The wizard is finished once both went through.
+   */
+  app.post('/api/onboarding/finish', async (req, reply) => {
+    const user = await owner(req, reply);
+    if (!user) return reply;
+    const body = (req.body ?? {}) as { agents?: unknown; autonomy?: unknown };
+    const chosen = new Set(
+      Array.isArray(body.agents) ? body.agents.filter((a) => typeof a === 'string') : [],
+    );
+    if (!chosen.size)
+      return reply
+        .code(400)
+        .send({ error: 'bad_request', message: 'Отметьте хотя бы одного агента' });
+    const gf = goldfishUserId(user);
+    try {
+      const hotel = await s.goldfish.hotel<HotelView>(gf, 'GET', '');
+      if (hotel.status !== 200) throw new Error(`hotel: ${hotel.status}`);
+      // The study first: refused (no extension yet), nothing is switched; on, the agents switched
+      // on next only read.
+      const study = await s.goldfish.hotel(gf, 'POST', '/study', { on: true });
+      if (study.status === 404)
+        return reply.code(400).send({
+          error: 'bad_request',
+          message: 'Сервер агентов ещё не умеет изучать кабинеты — его нужно обновить',
+        });
+      if (study.status !== 201)
+        return reply
+          .code(400)
+          .send({ error: 'bad_request', message: refusal(study.body, 'изучение не началось') });
+      const set = hotel.body.settings;
+      const changes: Array<Record<string, unknown>> = set.agents
+        .filter((a) => a.enabled !== chosen.has(a.id))
+        .map((a) => ({ op: 'agent', agent: a.id, enabled: chosen.has(a.id) }));
+      const level = Number(body.autonomy);
+      if (set.autonomyLevels?.some((l) => l.level === level) && level !== set.autonomy)
+        changes.push({ op: 'autonomy', level });
+      if (changes.length) {
+        const r = await s.goldfish.hotel(gf, 'POST', '/settings', { changes });
+        if (r.status !== 200)
+          return reply
+            .code(400)
+            .send({ error: 'bad_request', message: refusal(r.body, 'команда не сохранилась') });
+      }
+      await store.markOnboarded(user.id);
+      req.log.info({ userId: user.id, agents: [...chosen] }, 'setup finished: the agents study');
+      return { ok: true, redirect: '/agents' };
+    } catch (err) {
+      return unavailable(reply, req, err);
+    }
+  });
 
   // A chat linked to a bot, unlinked from the agents page (only the owner's own chats).
   app.post('/api/bots/unlink', async (req, reply) => {
