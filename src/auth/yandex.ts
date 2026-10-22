@@ -25,6 +25,11 @@ const InfoResponse = z.object({
 });
 
 const TIMEOUT_MS = 10_000;
+/**
+ * Yandex throttles now and then (2026-10-11: «429 proxy.api.error»): a refused exchange does not
+ * spend the code, so it is asked once more after a pause instead of failing the sign-in.
+ */
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 /**
  * Yandex ID sign-in: authorization code flow with PKCE. The access token is used once to read
@@ -41,6 +46,7 @@ export class YandexAuth {
       | 'YANDEX_LOGIN_URL'
     >,
     private readonly fetchFn: typeof fetch = fetch,
+    private readonly retryMs = 1_000,
   ) {}
 
   get redirectUri(): string {
@@ -62,18 +68,25 @@ export class YandexAuth {
 
   /** Exchanges the authorization code for an access token. */
   async exchange(code: string, codeVerifier: string): Promise<string> {
-    const res = await this.fetchFn(new URL('/token', this.config.YANDEX_OAUTH_URL), {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        client_id: this.config.YANDEX_CLIENT_ID,
-        client_secret: this.config.YANDEX_CLIENT_SECRET,
-        code_verifier: codeVerifier,
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    const ask = () =>
+      this.fetchFn(new URL('/token', this.config.YANDEX_OAUTH_URL), {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          client_id: this.config.YANDEX_CLIENT_ID,
+          client_secret: this.config.YANDEX_CLIENT_SECRET,
+          code_verifier: codeVerifier,
+        }),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+    let res = await ask();
+    if (RETRY_STATUSES.has(res.status)) {
+      await res.body?.cancel().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, this.retryMs));
+      res = await ask();
+    }
     const body: unknown = await res.json().catch(() => null);
     if (!res.ok) {
       const err = ErrorResponse.safeParse(body);

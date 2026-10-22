@@ -277,6 +277,8 @@ export class Fakes {
   /** code → PKCE challenge the authorize request carried. */
   readonly codes = new Map<string, string>();
   tokenExchangeFails = false;
+  /** Yandex throttles: this many next token requests get 429. */
+  tokenThrottled = 0;
 
   // Goldfish
   readonly clients: Array<{ id: string; name: string }> = [];
@@ -574,6 +576,13 @@ export class Fakes {
   }
 
   private yandexToken(init?: RequestInit): Response {
+    if (this.tokenThrottled > 0) {
+      this.tokenThrottled -= 1;
+      return json(
+        { error: 'proxy.api.error', error_description: 'bad response status code 429' },
+        429,
+      );
+    }
     const form = new URLSearchParams(String(init?.body ?? ''));
     const challenge = this.codes.get(form.get('code') ?? '');
     if (
