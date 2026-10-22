@@ -121,6 +121,14 @@ describe('Yandex ID sign-in', () => {
     });
   });
 
+  it('asks Yandex once more when it throttles the code exchange', async () => {
+    t = await startApp();
+    t.fakes.tokenThrottled = 1;
+    const cookies = await signIn(t);
+    expect(Object.keys(cookies)).toEqual(['__Host-gf_session']);
+    expect(t.fakes.tokenThrottled).toBe(0);
+  });
+
   it('keeps one account per Yandex ID and refreshes the profile on the next sign-in', async () => {
     t = await startApp();
     await signIn(t);

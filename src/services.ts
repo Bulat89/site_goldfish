@@ -39,7 +39,7 @@ export async function createServices(
     log,
     store,
     sessions: new Sessions(store, isSecure(config), config.SESSION_DAYS),
-    yandex: new YandexAuth(config, overrides.fetch),
+    yandex: new YandexAuth(config, overrides.fetch, overrides.retryDelaysMs?.[0]),
     goldfish,
     access: new AccessService(store, goldfish),
     bots: createBots(config, overrides.fetch),
