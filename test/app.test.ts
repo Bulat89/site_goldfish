@@ -34,8 +34,14 @@ describe('landing page', () => {
       'Управляющий',
     ])
       expect(res.body).toContain(`<h3>${agent}</h3>`);
-    expect(res.body).toContain('Запуск волнами');
+    // The landing says what it is, how it works and who decides; the waves and a second list of
+    // «how to start» are for the cabinet and the guide.
+    expect(res.body).toContain('Как это работает');
+    expect(res.body).toContain('Решения — за вами');
+    expect(res.body).not.toContain('Запуск волнами');
+    expect(res.body).not.toContain('Как начать');
     expect(res.body).not.toContain('Скачать расширение');
+    expect(res.body).not.toContain('href="/cabinet"');
     expect(res.headers['content-security-policy']).toContain("script-src 'self'");
     expect(res.headers['x-frame-options']).toBe('DENY');
     expect(res.headers['strict-transport-security']).toBeDefined();
@@ -91,18 +97,20 @@ describe('Yandex ID sign-in', () => {
     expect(cookie).toMatchObject({ httpOnly: true, secure: true, path: '/', sameSite: 'Lax' });
   });
 
-  it('signs the user in and greets them with the setup, without the server address', async () => {
+  it('signs the user in and opens their cabinet, without the server address', async () => {
     t = await startApp();
     const cookies = await signIn(t);
     expect(Object.keys(cookies)).toEqual(['__Host-gf_session']);
     const home = await t.app.inject({ url: '/', cookies });
     expect(home.statusCode).toBe(302);
-    expect(home.headers.location).toBe('/start');
-    const page = await t.app.inject({ url: '/start', cookies });
-    expect(page.body).toContain('Здравствуйте, Иван!');
+    expect(home.headers.location).toBe('/cabinet');
+    const page = await t.app.inject({ url: '/cabinet/settings', cookies });
+    expect(page.body).toContain('Личный кабинет');
+    expect(page.body).toContain('Иван Петров');
     expect(page.body).toContain('Скачать расширение');
     expect(page.body).toContain('Получить ключ подключения');
-    expect(page.body).not.toContain('agent.test');
+    // The address of the server goes inside the key; only the webhooks' base knows it.
+    expect(page.body.replace('data-base="https://agent.test"', '')).not.toContain('agent.test');
     expect(page.body).toContain('avatars.yandex.net/get-yapic/131652443%2Fabc-123/islands-68');
     expect(page.headers['cache-control']).toContain('no-store');
     // The Yandex access token is used once and not kept.
@@ -118,7 +126,7 @@ describe('Yandex ID sign-in', () => {
     await signIn(t);
     t.fakes.profile = { ...t.fakes.profile, real_name: 'Иван Сидоров', is_avatar_empty: true };
     const cookies = await signIn(t);
-    const page = await t.app.inject({ url: '/start', cookies });
+    const page = await t.app.inject({ url: '/cabinet', cookies });
     expect(page.body).toContain('Иван Сидоров');
     expect(page.body).toContain('avatar--empty');
   });
@@ -213,7 +221,7 @@ describe('device token', () => {
       userId: 'yandex:1000001',
     });
 
-    const page = await t.app.inject({ url: '/start?step=1', cookies });
+    const page = await t.app.inject({ url: '/cabinet/settings', cookies });
     expect(page.body).toContain('Выпустить новый ключ');
     expect(page.body).toContain('Ключ выдан');
     expect(page.body).not.toContain('gf_secret');
@@ -328,8 +336,9 @@ describe('extension download', () => {
     t.fakes.extensionZip = null;
     const cookies = await signIn(t);
     const res = await t.app.inject({ url: '/download', cookies });
-    expect(res.headers.location).toBe('/start?step=1&download=unavailable');
-    expect((await t.app.inject({ url: res.headers.location, cookies })).body).toContain(
+    expect(res.headers.location).toBe('/cabinet/settings?download=unavailable#extension-title');
+    const back = String(res.headers.location).split('#')[0]!;
+    expect((await t.app.inject({ url: back, cookies })).body).toContain(
       'Пакет расширения сейчас недоступен',
     );
   });

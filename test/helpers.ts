@@ -337,7 +337,9 @@ export class Fakes {
         { id: 'bnovo', title: 'Bnovo', category: 'pms', mode: 'full' },
         { id: 'sheet', title: 'Шахматка в таблице', category: 'sheet', mode: 'full' },
         { id: 'ostrovok', title: 'Островок', category: 'guest', mode: 'full' },
+        { id: 'yandex_travel', title: 'Яндекс Путешествия', category: 'guest', mode: 'full' },
         { id: 'avito', title: 'Авито', category: 'guest', mode: 'full' },
+        { id: '101hotels', title: '101Hotels', category: 'guest', mode: 'full' },
         { id: 'yandex_maps', title: 'Яндекс Карты', category: 'maps', mode: 'full' },
       ],
       agents: [
@@ -642,7 +644,17 @@ export class Fakes {
         path: `${decodeURIComponent(m[2]!)} ${sub}${url.search}`,
         body,
       });
-      if (method === 'GET' && sub === '') return json(this.hotel);
+      // The property says it is being studied while the study runs, as the real server does.
+      if (method === 'GET' && sub === '')
+        return json({
+          ...this.hotel,
+          settings: {
+            ...this.hotel.settings,
+            study: this.study?.on
+              ? { since: this.study.since }
+              : ((this.hotel.settings as { study?: unknown }).study ?? null),
+          },
+        });
       if (method === 'GET' && sub === '/manager')
         return this.deskSupported ? json(this.desk()) : json({ error: 'not_found' }, 404);
       if (method === 'GET' && sub === '/approvals') return json(this.approvals);
@@ -663,9 +675,23 @@ export class Fakes {
           },
         ]);
       if (method === 'POST' && sub === '/settings') {
-        const disabling = (
-          body.changes as Array<{ op: string; agent?: string; enabled?: boolean }>
-        ).some((c) => c.op === 'agent' && c.agent === 'channels' && !c.enabled);
+        const changes = body.changes as Array<{
+          op: string;
+          agent?: string;
+          enabled?: boolean;
+          level?: number;
+        }>;
+        const disabling = changes.some(
+          (c) => c.op === 'agent' && c.agent === 'channels' && !c.enabled,
+        );
+        // The agents and the level of autonomy are really changed; the rest is only accepted.
+        for (const c of changes) {
+          if (c.op === 'agent') {
+            const agent = this.hotel.settings.agents.find((a) => a.id === c.agent);
+            if (agent) agent.enabled = !!c.enabled;
+          }
+          if (c.op === 'autonomy' && c.level) this.hotel.settings.autonomy = c.level;
+        }
         return json({
           ...this.hotel,
           warnings: disabling

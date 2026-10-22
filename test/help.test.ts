@@ -38,48 +38,57 @@ describe('user guide', () => {
     expect((await t.app.inject({ url: '/' })).body).toContain('href="/help"');
   });
 
-  it('every link into the guide and from it to the agents page lands on an existing anchor', async () => {
-    // With the bots server: the cabinet has its QR codes (#bots) the guide links to.
+  it('every link into the guide and from it to the cabinet lands on an existing anchor', async () => {
+    // With the bots server: the settings have the QR codes (#bots) the guide speaks of.
     t = await startApp({ BOTS_URL, BOTS_API_TOKEN: BOTS_TOKEN });
     const cookies = await signIn(t);
     const help = (await t.app.inject({ url: '/help', cookies })).body;
-    const agents = (await t.app.inject({ url: '/agents', cookies })).body;
-    const steps = await Promise.all(
-      [1, 2, 3, 4].map(
-        async (n) => (await t.app.inject({ url: `/start?step=${n}`, cookies })).body,
-      ),
-    );
+    const page = async (path: string) => (await t.app.inject({ url: path, cookies })).body;
+    const cabinet = {
+      '/cabinet': await page('/cabinet'),
+      '/cabinet/agents': await page('/cabinet/agents'),
+      '/cabinet/property': await page('/cabinet/property'),
+      '/cabinet/prices': await page('/cabinet/prices'),
+      '/cabinet/settings': await page('/cabinet/settings'),
+    };
     const helpIds = ids(help);
 
-    const intoGuide = [...links(agents, '/help'), ...steps.flatMap((x) => links(x, '/help'))];
+    // The cabinet explains itself through the guide only where the guide says more than the page.
+    const intoGuide = Object.values(cabinet).flatMap((x) => links(x, '/help'));
     expect(intoGuide.length).toBeGreaterThan(8);
     for (const id of intoGuide) expect(helpIds, `/help#${id}`).toContain(id);
     for (const id of links(help, '')) expect(helpIds, `#${id}`).toContain(id);
 
-    // Every link to the agents page opens the tab its anchor is on, also without a script.
-    expect(links(help, '/agents')).toEqual([]);
-    const toAgents = [...help.matchAll(/href="\/agents\?tab=(\w+)#([^"]+)"/g)];
-    expect(toAgents.length).toBeGreaterThan(10);
-    for (const [, tab, id] of toAgents) {
-      const panel = new RegExp(`data-panel="${tab}"[^>]*>((?:(?!data-panel=)[\\s\\S])*)`).exec(
-        agents,
-      )?.[1];
-      expect(panel, `/agents?tab=${tab}`).toBeDefined();
-      expect(ids(panel!), `/agents?tab=${tab}#${id}`).toContain(id!);
+    // Every link from the guide to the cabinet opens the page its anchor is on.
+    expect(help).not.toMatch(/href="\/(agents|start)/);
+    const toCabinet = [...help.matchAll(/href="(\/cabinet[^"#]*)#([^"]+)"/g)];
+    expect(toCabinet.length).toBeGreaterThan(10);
+    for (const [, path, id] of toCabinet) {
+      const html = cabinet[path as keyof typeof cabinet];
+      expect(html, `${path}#${id}`).toBeDefined();
+      expect(ids(html!), `${path}#${id}`).toContain(id!);
     }
-    // Links to a step of the setup land on an anchor of that step.
-    expect(links(help, '/')).toEqual([]);
-    const toSteps = [...help.matchAll(/href="\/start\?step=(\d)#([^"]+)"/g)];
-    expect(toSteps.length).toBeGreaterThan(2);
-    for (const [, n, id] of toSteps)
-      expect(ids(steps[Number(n) - 1]!), `step ${n}#${id}`).toContain(id);
+    // The guide names the places of the cabinet as they are: no tabs that do not exist.
+    for (const gone of [
+      'вкладка «Команда»',
+      'вкладке «Команда»',
+      'шаге настройки',
+      'странице агентов',
+    ])
+      expect(help, gone).not.toContain(gone);
   });
 
-  it('the agents page shows what is left to set up, with links to the guide', async () => {
+  it('the cabinet shows what is left to set up; the guide is one click from every section', async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    const html = (await t.app.inject({ url: '/agents', cookies })).body;
-    expect(html).toMatch(/Первые шаги · осталось \d из 4/);
-    expect(html).toContain('href="/agents?tab=settings#telegram-title">Привяжите Telegram');
+    const html = (await t.app.inject({ url: '/cabinet', cookies })).body;
+    expect(html).toMatch(/Первые шаги · осталось \d из 5/);
+    expect(html).toContain('href="/cabinet/settings#telegram-title"');
+    expect(html).toContain('href="/help"');
+    // The guide knows who asks: an owner gets the way back to the cabinet.
+    const help = (await t.app.inject({ url: '/help', cookies })).body;
+    expect(help).toContain('<a href="/cabinet">Личный кабинет</a> · инструкция');
+    expect(help).not.toContain('<a href="/cabinet" aria-current="page"');
+    expect(help).toContain('<a href="/help" aria-current="page">Инструкция</a>');
   });
 });

@@ -17,11 +17,11 @@ afterEach(async () => {
   await t?.app.close();
 });
 
-describe('agents page: folded team and the reference from a card', () => {
+describe('the reference from a card; the team folded', () => {
   it('duties of every agent are folded by default; the state of the agent stays visible', async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    const html = (await t.app.inject({ url: '/agents', cookies })).body;
+    const html = (await t.app.inject({ url: '/cabinet/agents', cookies })).body;
     expect(html).toContain('<details class="agent__more" data-fold="agent:channels">');
     expect(html).not.toMatch(/class="agent__more"[^>]*\sopen/);
     expect(html).toMatch(/работает · \d+ из \d+ обязанност/);
@@ -35,19 +35,19 @@ describe('agents page: folded team and the reference from a card', () => {
   it('offers a link or the text of a card; a ready draft lists fields with checkboxes', async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    let html = (await t.app.inject({ url: '/agents', cookies })).body;
+    let html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain('Заполнить из карточки');
     expect(html).toContain('data-form="import-url"');
     expect(html).toContain('data-form="import-text"');
     expect(html).toContain('<details class="profile__manual" open>');
 
     t.fakes.profileImport = { ...IMPORT_READY, status: 'reading', fields: [] };
-    html = (await t.app.inject({ url: '/agents', cookies })).body;
+    html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain('data-import-poll="imp_1"');
     expect(html).toContain('Агент читает карточку на Авито');
 
     t.fakes.profileImport = IMPORT_READY;
-    html = (await t.app.inject({ url: '/agents', cookies })).body;
+    html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain('Черновик из карточки на Авито: найдено 2');
     expect(html).toContain('<input type="checkbox" name="field" value="rooms" checked');
     expect(html).toContain('Дом у моря &#60;b&#62;');
@@ -57,7 +57,7 @@ describe('agents page: folded team and the reference from a card', () => {
 
     // The reading stopped at a limit: the draft of what was read says so.
     t.fakes.profileImport = { ...IMPORT_READY, partial: 'достигнут лимит шагов (60)' };
-    html = (await t.app.inject({ url: '/agents', cookies })).body;
+    html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain(
       'Карточка прочитана не полностью (достигнут лимит шагов (60)) — части полей может не быть.',
     );
@@ -112,7 +112,7 @@ describe('agents page: folded team and the reference from a card', () => {
   });
 });
 
-describe('agents page: the card is read while the Goldfish server restarts', () => {
+describe('the card is read while the Goldfish server restarts', () => {
   it('a poll that meets the restart is logged as info, out of the error journal', async () => {
     const lines: Array<{ level: number; msg: string }> = [];
     const log = pino({ level: 'info' }, { write: (line: string) => lines.push(JSON.parse(line)) });
@@ -140,7 +140,7 @@ describe('agents page: the card is read while the Goldfish server restarts', () 
     ]);
   });
 
-  it('the agents and prices pages say it restarts and reload themselves, out of the error journal', async () => {
+  it('every section says it restarts and reload themselves, out of the error journal', async () => {
     // 2026-10-14 16:38: a deploy of Goldfish gave the agents page «unavailable» and an error.
     const lines: Array<{ level: number; msg: string }> = [];
     const log = pino({ level: 'info' }, { write: (line: string) => lines.push(JSON.parse(line)) });
@@ -148,8 +148,11 @@ describe('agents page: the card is read while the Goldfish server restarts', () 
     const cookies = await signIn(t);
     t.fakes.goldfishRestarting = true;
     for (const [url, msg] of [
-      ['/agents', 'agents page: goldfish restarting, the page reloads'],
-      ['/agents/prices', 'prices page: goldfish restarting, the page reloads'],
+      ['/cabinet', 'today page: goldfish restarting, the page reloads'],
+      ['/cabinet/agents', 'agents page: goldfish restarting, the page reloads'],
+      ['/cabinet/property', 'property page: goldfish restarting, the page reloads'],
+      ['/cabinet/prices', 'prices page: goldfish restarting, the page reloads'],
+      ['/cabinet/settings', 'settings page: goldfish restarting, the page reloads'],
     ] as const) {
       const res = await t.app.inject({ url, cookies });
       expect(res.statusCode).toBe(200);
@@ -162,7 +165,7 @@ describe('agents page: the card is read while the Goldfish server restarts', () 
     // A server that cannot be reached at all stays an error, and the page does not reload.
     t.fakes.goldfishRestarting = false;
     t.fakes.goldfishDown = true;
-    const down = await t.app.inject({ url: '/agents', cookies });
+    const down = await t.app.inject({ url: '/cabinet/agents', cookies });
     expect(down.headers.refresh).toBeUndefined();
     expect(down.body).toContain('Сервер агентов сейчас недоступен');
     expect(lines.filter((l) => l.level >= 50).map((l) => l.msg)).toEqual([
@@ -171,11 +174,11 @@ describe('agents page: the card is read while the Goldfish server restarts', () 
   });
 });
 
-describe('agents page: listings on the platforms and competitors', () => {
+describe('listings on the platforms and competitors', () => {
   it('offers both searches, then shows the listings with «моё» and the candidates with answers', async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    let html = (await t.app.inject({ url: '/agents', cookies })).body;
+    let html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain('data-act="listings-start"');
     expect(html).toContain('data-act="competitors-start"');
     expect(html).toContain('Поиск начнётся только по кнопке');
@@ -206,7 +209,7 @@ describe('agents page: listings on the platforms and competitors', () => {
         },
       ],
     };
-    html = (await t.app.inject({ url: '/agents', cookies })).body;
+    html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain('data-poll-url="/api/agents/listings"');
     expect(html).toContain('data-poll-url="/api/agents/competitors"');
     // The page reloads when this changes (app.js computes the same from the poll).
@@ -235,11 +238,12 @@ describe('agents page: listings on the platforms and competitors', () => {
 
     t.fakes.listings = LISTINGS_READY;
     t.fakes.competitorSearch = COMPETITORS_READY;
-    html = (await t.app.inject({ url: '/agents', cookies })).body;
+    html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
     expect(html).toContain(
       'data-act="listing-verdict" data-id="lst_1" data-platform="ostrovok" data-mine="1"',
     );
-    expect(html).toContain('похоже на ваше: название совпадает, адрес совпадает');
+    expect(html).toContain('Нашёл — похоже на ваше:');
+    expect(html).toContain('название совпадает, адрес совпадает');
     expect(html).toContain('✓ подключена');
     expect(html).toContain('data-act="listing-publish" data-id="lst_1" data-platform="avito"');
     expect(html).toContain('не прочитано: капча');
@@ -253,18 +257,24 @@ describe('agents page: listings on the platforms and competitors', () => {
     expect(html).toContain('data-verdict="not" aria-pressed="true"');
   });
 
-  it('the owner enters a listing’s address by hand, with or without a search before', async () => {
+  it('the owner types a listing’s address in its row, with or without a search before', async () => {
     t = await startApp();
     const cookies = await signIn(t);
-    // No search yet: the form is there next to «Найти объявления», with the guest platforms.
-    let html = (await t.app.inject({ url: '/agents', cookies })).body;
-    expect(html).toContain('data-form="listing-manual"');
-    expect(html).toContain('<option value="ostrovok">Островок</option>');
-    expect(html).toContain('<option value="avito">Авито</option>');
-    expect(html).not.toContain('<option value="bnovo"');
+    // No search yet: every platform for guests has its field, next to «Найти объявления».
+    let html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
+    for (const platform of ['ostrovok', 'yandex_travel', 'avito', '101hotels', 'yandex_maps'])
+      expect(html).toContain(`name="listing" data-platform="${platform}"`);
+    expect(html).toContain('data-act="listings-start">Найти объявления</button>');
+    // One way to enter an address: no form of its own, no «внести ссылку» buttons.
+    expect(html).not.toContain('data-form="listing-manual"');
+    expect(html).not.toContain('listing-manual-pick');
 
-    // A record made by an address entered by hand: the rest is «не искали», with a link to enter.
+    // A record made by an address typed by hand: the table says what is known about each row.
     const [ostrovok, yandex, avito, hotels101] = LISTINGS_READY.platforms;
+    t.fakes.hotel.profile.systems = [
+      { id: 'yandex_travel', listingUrl: 'https://travel.yandex.ru/hotels/x' },
+      { id: '101hotels', listingUrl: 'https://101hotels.com/x' },
+    ];
     t.fakes.listings = {
       ...LISTINGS_READY,
       platforms: [
@@ -274,48 +284,24 @@ describe('agents page: listings on the platforms and competitors', () => {
         { ...hotels101, status: 'found', verdict: 'mine', error: 'не удалось перечитать: капча' },
       ],
     };
-    html = (await t.app.inject({ url: '/agents', cookies })).body;
-    expect(html).toContain('не искали');
-    expect(html).toContain('data-act="listing-manual-pick" data-platform="ostrovok"');
-    expect(html).toContain('data-act="listing-manual-pick" data-platform="avito"');
+    html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
+    expect(html).toContain('value="https://travel.yandex.ru/hotels/x"');
     expect(html).toContain('внесено вручную');
     expect(html).toContain('не удалось перечитать: капча');
-    expect(html).toContain('ваши объявления (подключённые и внесённые вручную)');
+    expect(html).toContain('объявления нет');
+    expect(html).toContain('data-act="listing-publish" data-id="lst_1" data-platform="avito"');
+    expect(html).toContain('data-act="listings-start">Обновить поиск</button>');
+    expect(html).toContain('data-act="listings-sync"');
 
-    const added = await t.app.inject({
+    // The address of one listing is no longer sent on its own: the table is saved as a whole.
+    const alone = await t.app.inject({
       method: 'POST',
       url: '/api/agents/listings/manual',
       cookies,
       headers: origin,
       payload: { platform: 'avito', url: 'https://www.avito.ru/sochi/doma/dom_123' },
     });
-    expect(added.statusCode).toBe(200);
-    expect(
-      added.json().platforms.find((x: { platform: string }) => x.platform === 'avito'),
-    ).toMatchObject({
-      verdict: 'mine',
-      manual: true,
-    });
-    // The server's refusal reaches the owner as is; a change needs this site's origin.
-    const wrong = await t.app.inject({
-      method: 'POST',
-      url: '/api/agents/listings/manual',
-      cookies,
-      headers: origin,
-      payload: { platform: 'avito', url: 'https://ostrovok.ru/hotel/x' },
-    });
-    expect(wrong.statusCode).toBe(400);
-    expect(wrong.json().message).toBe('это ссылка не на Авито');
-    expect(
-      (
-        await t.app.inject({
-          method: 'POST',
-          url: '/api/agents/listings/manual',
-          cookies,
-          payload: { platform: 'avito', url: 'https://www.avito.ru/x' },
-        })
-      ).statusCode,
-    ).toBe(403);
+    expect(alone.statusCode).toBe(404);
   });
 
   it('forwards the owner’s answers and polls only with the session', async () => {
