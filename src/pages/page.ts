@@ -278,6 +278,7 @@ const SYSTEMS = [
   'TravelLine',
   'Контур.Отель',
   'Shelter',
+  'Saby Hotel',
   'Realty Calendar',
   'шахматка в таблице',
   'Островок',

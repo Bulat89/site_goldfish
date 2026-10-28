@@ -23,6 +23,7 @@ const CRM_PLACEHOLDERS: Record<string, string> = {
   travelline: 'https://www.travelline.ru/secure/…',
   kontur_hotel: 'https://hotel.kontur.ru/…',
   shelter: 'https://shelter.ru/…',
+  saby_hotel: 'https://online.saby.ru/…',
   realty_calendar: 'https://realtycalendar.ru/…',
   sheet: 'https://docs.google.com/spreadsheets/…',
 };
