@@ -300,6 +300,8 @@ describe('«Объект»: the reference', () => {
     expect(html).toContain('data-list="faq"');
     expect(html).toContain('data-list="upsells"');
     expect(html).toContain('data-list="competitors"');
+    expect(html).toContain('data-list="extras"');
+    expect(html).toContain('<span class="group__note">нет</span>');
     expect(html).toContain('+ Добавить категорию');
     // Systems: a checkbox each, connected ones ticked with their address and commission.
     expect(html).toMatch(
@@ -313,6 +315,27 @@ describe('«Объект»: the reference', () => {
     // Folded parts say what is in them.
     expect(html).toContain('<span class="group__note">1 категория, номеров — 2</span>');
     expect(html).toContain('<span class="group__note">подключено 1</span>');
+  });
+
+  it('«Дополнительно» keeps who added each item: the manager only with the owner’s approval', async () => {
+    t = await startApp();
+    const cookies = await signIn(t);
+    const bath = {
+      title: 'Баня',
+      text: '2 000 ₽ за 2 часа',
+      by: 'manager',
+      addedAt: '2026-10-08T07:00:00.000Z',
+    };
+    (t.fakes.hotel.profile as Record<string, unknown>).extras = [
+      bath,
+      { title: '', text: 'Магазин в 300 м', by: 'owner' },
+    ];
+    const html = (await t.app.inject({ url: '/cabinet/property', cookies })).body;
+    expect(html).toContain(`<div class="list-edit__row" data-item="${esc(JSON.stringify(bath))}">`);
+    expect(html).toContain(
+      '<span class="group__note">записей — 2, с вашего согласия от управляющего — 1</span>',
+    );
+    expect(html).toContain('+ Добавить сведение');
   });
 
   it('keeps one place for each thing: the CRM is in the settings, the listing in its table', async () => {
