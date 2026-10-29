@@ -1380,6 +1380,8 @@ function profileForm(h: HotelView): string {
   const systems = list('systems');
   const faq = list('faq');
   const upsells = list('upsells');
+  const extras = list('extras');
+  const byManager = extras.filter((e) => e.by === 'manager').length;
   const units = rooms.reduce((n, r) => n + (Number(r.count) || 0), 0);
   const text = (name: string, label: string, value: unknown, type = 'text', placeholder = '') =>
     `<label class="field"><span class="field__label">${esc(label)}</span><input name="${esc(name)}" type="${type}" value="${esc(String(value ?? ''))}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ''}></label>`;
@@ -1467,6 +1469,30 @@ function profileForm(h: HotelView): string {
     ],
     faq,
     'Добавить ответ',
+  )}`,
+  )}
+  ${group(
+    'profile-extras',
+    'Дополнительно',
+    extras.length
+      ? `записей — ${extras.length}${byManager ? `, с вашего согласия от управляющего — ${byManager}` : ''}`
+      : 'нет',
+    false,
+    `<p class="hint hint--top">То, для чего нет своего поля: баня и её цена, магазин рядом, тихий час. Агенты опираются на это в карточках, на сайте и в ответах гостям. Управляющий добавляет сюда то, что вы ему рассказали, только после вашего согласия.</p>
+  ${listEditor(
+    'extras',
+    [
+      { key: 'title', label: 'О чём', type: 'text', placeholder: 'Баня' },
+      {
+        key: 'text',
+        label: 'Что знать агентам',
+        type: 'textarea',
+        required: true,
+        placeholder: '2 000 ₽ за 2 часа, топим по записи за день.',
+      },
+    ],
+    extras,
+    'Добавить сведение',
   )}`,
   )}
   ${group(
