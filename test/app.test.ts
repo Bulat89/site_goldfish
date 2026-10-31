@@ -92,6 +92,8 @@ describe('Yandex ID sign-in', () => {
     expect(url.searchParams.get('client_id')).toBe('ya-client');
     expect(url.searchParams.get('redirect_uri')).toBe(`${PUBLIC_URL}/auth/yandex/callback`);
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    // Yandex asks which account signs in, so a second account can sign in after «Выйти».
+    expect(url.searchParams.get('force_confirm')).toBe('yes');
     expect(url.searchParams.get('state')).toMatch(/^[\w-]{20,}$/);
     const cookie = res.cookies.find((c) => c.name === '__Host-gf_oauth')!;
     expect(cookie).toMatchObject({ httpOnly: true, secure: true, path: '/', sameSite: 'Lax' });

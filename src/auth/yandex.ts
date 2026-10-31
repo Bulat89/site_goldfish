@@ -53,6 +53,11 @@ export class YandexAuth {
     return `${this.config.PUBLIC_URL}/auth/yandex/callback`;
   }
 
+  /**
+   * `force_confirm` makes Yandex ask every time which account signs in. Without it a browser
+   * signed in to Yandex comes back at once with that same account: after «Выйти» a second
+   * account could not sign in, and the owner saw the first one's cabinet again.
+   */
   authorizeUrl(state: string, codeVerifier: string): string {
     const url = new URL('/authorize', this.config.YANDEX_OAUTH_URL);
     url.search = new URLSearchParams({
@@ -62,6 +67,7 @@ export class YandexAuth {
       state,
       code_challenge: pkceChallenge(codeVerifier),
       code_challenge_method: 'S256',
+      force_confirm: 'yes',
     }).toString();
     return url.toString();
   }
